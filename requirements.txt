@@ -12,3 +12,4 @@ rtree
 fiona
 shapely
 polyline
+osmium
