@@ -1,16 +1,20 @@
 # backend/routing_scenic.py
 
 from backend.valhalla_client import valhalla_route
-from backend.utils.landuse_scoring import compute_green_score, compute_water_score
+from backend.utils.landuse_scoring import compute_scores_from_valhalla
+import polyline
 
 
 def get_scenic_route(start, end):
     """
     Scenic routing using Valhalla.
     Strategy:
-        1. Generate multiple Valhalla routes with slight endpoint nudges
-        2. Score each route on greenery + water
-        3. Choose the highest-scoring one
+        1. Compute multiple Valhalla routes with small nudges
+        2. Score each route using Valhalla-based scenic scoring:
+           - green score
+           - water score
+           - scenic score (surface + density + use)
+        3. Return the highest-scoring one
     """
 
     if not start or not end:
@@ -18,66 +22,75 @@ def get_scenic_route(start, end):
 
     candidates = []
 
-    # ------------------------
+    # ---------------------------------------
     # Base route
-    # ------------------------
+    # ---------------------------------------
     try:
         r1 = valhalla_route(start, end, costing="pedestrian")
-        coords = r1["trip"]["legs"][0]["shape"]
-        candidates.append(("base", coords))
-    except:
+        candidates.append(("base", r1))
+    except Exception:
         pass
 
     lat2, lon2 = end
 
-    # ------------------------
-    # Park-biased
-    # ------------------------
+    # ---------------------------------------
+    # Park-biased (nudged endpoint NE)
+    # ---------------------------------------
     try:
         park_end = (lat2 + 0.0007, lon2 + 0.0007)
         r2 = valhalla_route(start, park_end, costing="pedestrian")
-        coords = r2["trip"]["legs"][0]["shape"]
-        candidates.append(("park", coords))
-    except:
+        candidates.append(("park", r2))
+    except Exception:
         pass
 
-    # ------------------------
-    # Water-biased
-    # ------------------------
+    # ---------------------------------------
+    # Water-biased (nudged endpoint SW)
+    # ---------------------------------------
     try:
         water_end = (lat2 - 0.0007, lon2 - 0.0007)
         r3 = valhalla_route(start, water_end, costing="pedestrian")
-        coords = r3["trip"]["legs"][0]["shape"]
-        candidates.append(("water", coords))
-    except:
+        candidates.append(("water", r3))
+    except Exception:
         pass
 
     if not candidates:
         return {"error": "Valhalla failed to compute scenic routes."}
 
-    # ------------------------
-    # Score routes
-    # ------------------------
+    # ---------------------------------------
+    # Score each route
+    # ---------------------------------------
     scored = []
-    for label, polyline in candidates:
-        # decode valhalla polyline
-        import polyline
-        coords = polyline.decode(polyline)
+    for label, route_json in candidates:
+        try:
+            scores = compute_scores_from_valhalla(route_json)
 
-        green = compute_green_score(coords)
-        water = compute_water_score(coords)
+            # scenic = combination of green + water + scenic metrics
+            final_score = (
+                0.5 * scores["scenic"] +
+                0.3 * scores["green"] +
+                0.2 * scores["water"]
+            )
 
-        total_score = 0.6 * green + 0.4 * water
-        scored.append((total_score, label, polyline))
+            # polyline for returning to frontend
+            poly = route_json["trip"]["legs"][0]["shape"]
 
-    # ------------------------
-    # Return highest scoring
-    # ------------------------
-    best_score, best_label, best_polyline = max(scored, key=lambda x: x[0])
+            scored.append((final_score, label, poly, scores))
+        except Exception as e:
+            print("Scoring failed:", e)
+            continue
+
+    if not scored:
+        return {"error": "Scoring failed for all routes."}
+
+    # pick highest-scoring route
+    best_score, best_label, best_poly, best_scores = max(scored, key=lambda x: x[0])
 
     return {
         "mode": "scenic",
         "variant": best_label,
         "scenic_score": float(best_score),
-        "coordinates_polyline": best_polyline,
+        "green": float(best_scores["green"]),
+        "water": float(best_scores["water"]),
+        "scenic_detail": float(best_scores["scenic"]),
+        "coordinates_polyline": best_poly,
     }
