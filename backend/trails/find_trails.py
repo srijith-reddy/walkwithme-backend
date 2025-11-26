@@ -6,7 +6,7 @@ from shapely.ops import transform
 import pyproj
 
 # Your Valhalla URL
-VALHALLA_URL = "http://localhost:8002"   # change to your Fly.io endpoint
+VALHALLA_URL = "http://165.227.188.199:8002" 
 
 
 # ============================================================
