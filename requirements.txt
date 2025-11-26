@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+osmnx
+networkx
+haversine
+requests
+pydantic
+python-dotenv
+rapidfuzz
+openai
+rtree
+fiona
+shapely
