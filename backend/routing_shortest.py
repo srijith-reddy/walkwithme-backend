@@ -1,9 +1,10 @@
 from backend.valhalla_client import valhalla_route
+import polyline
 
 def get_shortest_route(start, end):
     """
     Uses Valhalla walking engine to compute shortest pedestrian route.
-    Valhalla is returning RAW coords, so do NOT decode polyline.
+    Valhalla is returning polyline6 → decode with precision=6.
     """
 
     if not start or not end:
@@ -17,14 +18,13 @@ def get_shortest_route(start, end):
 
         shape = result["trip"]["legs"][0]["shape"]
 
-        # 🔥 STOP using polyline.decode()
-        # 🔥 Convert raw microdegree coords → degrees
-        coords = [(lat / 1e6, lon / 1e6) for lat, lon in shape]
+        # 🔥 Valhalla uses polyline6 → precision=6
+        coords = polyline.decode(shape, precision=6)
 
         return {
             "mode": "shortest",
-            "coordinates": coords,
-            "summary": result["trip"]["summary"]
+            "coordinates": coords,   # now ~[40.73, -74.02]
+            "summary": result["trip"]["summary"],
         }
 
     except Exception as e:
@@ -32,6 +32,6 @@ def get_shortest_route(start, end):
             "error": f"Valhalla routing failed: {e}",
             "suggest": [
                 "Try another start or end point.",
-                "Check Valhalla server status."
-            ]
+                "Check Valhalla server status.",
+            ],
         }
