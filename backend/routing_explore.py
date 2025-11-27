@@ -1,6 +1,7 @@
 from backend.valhalla_client import valhalla_route
 from datetime import datetime
 import requests
+import polyline
 
 
 # ============================================================
@@ -21,7 +22,6 @@ def get_weather(lat, lon):
         if temp > 30: return "hot"
         if temp < 5:  return "cold"
         return "clear"
-
     except:
         return "clear"
 
@@ -34,7 +34,7 @@ def is_night(lat, lon):
         url = f"https://api.sunrise-sunset.org/json?lat={lat}&lng={lon}&formatted=0"
         r = requests.get(url, timeout=5).json()["results"]
         sunrise = datetime.fromisoformat(r["sunrise"])
-        sunset = datetime.fromisoformat(r["sunset"])
+        sunset  = datetime.fromisoformat(r["sunset"])
         now = datetime.utcnow()
         return not (sunrise <= now <= sunset)
     except:
@@ -42,7 +42,7 @@ def is_night(lat, lon):
 
 
 # ============================================================
-# Explore Route (Valhalla)
+# EXPLORE ROUTE (Valhalla)
 # ============================================================
 def get_explore_route(start, end):
 
@@ -56,30 +56,27 @@ def get_explore_route(start, end):
     night = is_night(lat1, lon1)
 
     # -----------------------------------------------------------------
-    # COSTING OPTIONS TUNED FOR EXPLORATION
+    # COSTING OPTIONS — tuned for exploration
     # -----------------------------------------------------------------
-    # Lower numbers = prefer
-    # Higher numbers = avoid
     explore_cost = {
         "pedestrian": {
-            "use_roads": 0.1,          # strongly avoid big roads
-            "use_tracks": 0.6,         # allow trails in day
-            "use_hills": 0.4,          # avoid steep slopes a little
-            "use_lit": 0.6,            # prefer lit but not strict
-            "alley_factor": 1.2,       # slightly avoid alleys
-            "safety_factor": 0.9,      # explore = relaxed safety weight
-            "walkway_factor": 0.5,     # prefer sidewalks
-            "alley_factor": 1.4        # avoid alleys slightly
+            "use_roads": 0.1,
+            "use_tracks": 0.6,
+            "use_hills": 0.4,
+            "use_lit": 0.6,
+            "alley_factor": 1.4,
+            "safety_factor": 0.9,
+            "walkway_factor": 0.5
         }
     }
 
     # Weather adjustments
     if weather in ["rain", "snow", "cold"]:
-        explore_cost["pedestrian"]["use_tracks"] = 0.2  # stay urban
+        explore_cost["pedestrian"]["use_tracks"] = 0.2
 
     if night:
-        explore_cost["pedestrian"]["use_tracks"] = 0.0  # avoid trails completely
-        explore_cost["pedestrian"]["use_lit"] = 1.2     # hunt lit streets
+        explore_cost["pedestrian"]["use_tracks"] = 0.0
+        explore_cost["pedestrian"]["use_lit"] = 1.2
 
     # -----------------------------------------------------------------
     # VALHALLA CALL
@@ -95,11 +92,15 @@ def get_explore_route(start, end):
         return {"error": "Valhalla failed explore route."}
 
     leg = result["trip"]["legs"][0]
+    poly_str = leg["shape"]
+
+    # ⭐ DECODE polyline to coordinates list (lat, lon)
+    coords = polyline.decode(poly_str)
 
     return {
         "mode": "explore",
         "weather": weather,
         "night": night,
-        "coordinates_polyline": leg["shape"],
+        "coordinates": coords,     # ⭐ REQUIRED
         "summary": result["trip"]["summary"]
     }

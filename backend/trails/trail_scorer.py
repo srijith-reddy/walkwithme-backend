@@ -3,62 +3,88 @@
 import numpy as np
 from shapely.geometry import LineString
 import requests
+import time
 
 
 # ============================================================
-# 1. Batch elevation fetcher (Open-Elevation)
+# 1. Safe elevation fetcher (tries OpenTopoData → OpenElevation)
 # ============================================================
 def fetch_batch_elevation(coords):
     """
-    coords = [(lat, lon), ...]
-    Returns list of elevation values.
-    Guaranteed same length as coords.
+    coords: [(lat, lon)]
+    Returns elevation list (same length).
     """
 
     if not coords:
         return []
 
-    param = "|".join([f"{lat},{lon}" for lat, lon in coords])
-    url = f"https://api.open-elevation.com/api/v1/lookup?locations={param}"
+    # Format: lat,lon|lat,lon|...
+    loc = "|".join([f"{lat},{lon}" for lat, lon in coords])
+
+    # --------------------------------------
+    # Primary: OpenTopoData (BEST OPTION)
+    # --------------------------------------
+    topo_url = f"https://api.opentopodata.org/v1/eudem25m?locations={loc}"
 
     try:
-        r = requests.get(url, timeout=5)
-        r.raise_for_status()
-        data = r.json()["results"]
-        return [item["elevation"] for item in data]
+        r = requests.get(topo_url, timeout=4)
+        if r.status_code == 200:
+            js = r.json()
+            if "results" in js:
+                elev = [x.get("elevation", 0.0) for x in js["results"]]
+                return elev
     except:
-        # Fail-safe: return zeros
-        return [0.0] * len(coords)
+        pass
+
+    # --------------------------------------
+    # Fallback: OpenElevation
+    # --------------------------------------
+    elev_url = f"https://api.open-elevation.com/api/v1/lookup?locations={loc}"
+
+    for attempt in range(3):
+        try:
+            r = requests.get(elev_url, timeout=4)
+            if r.status_code == 200:
+                js = r.json()
+                if "results" in js:
+                    return [item.get("elevation", 0.0) for item in js["results"]]
+        except:
+            pass
+
+        time.sleep(0.3 * (attempt + 1))
+
+    # Fail-safe: flat ground
+    return [0.0] * len(coords)
 
 
 # ============================================================
-# 2. Elevation gain (batch + smoothing)
+# 2. Compute elevation gain on trail geometry
 # ============================================================
 def compute_elevation_gain(geometry: LineString):
     """
-    Computes smoothed elevation gain for a trail LineString.
+    geometry.coords = [(lon, lat), ...]
+    Convert → (lat, lon) for API.
     """
 
-    # Valhalla → Shapely stores coords as (lon, lat)
+    # FIXED coordinate order:
     coords = [(lat, lon) for lon, lat in geometry.coords]
 
-    # Fetch elevations in chunks
-    batch_size = 100
     elevations = []
+    batch_size = 100
 
     for i in range(0, len(coords), batch_size):
-        chunk = coords[i:i + batch_size]
+        chunk = coords[i:i+batch_size]
         elevations.extend(fetch_batch_elevation(chunk))
 
-    # Simple smoothing kernel
     elev = np.array(elevations, dtype=float)
+
+    # Smooth (reduce noise)
     kernel = np.array([0.25, 0.5, 0.25])
     smooth = np.convolve(elev, kernel, mode="same")
 
-    # Compute total positive elevation gain
     gain = 0.0
     for i in range(1, len(smooth)):
-        diff = smooth[i] - smooth[i - 1]
+        diff = smooth[i] - smooth[i-1]
         if diff > 0:
             gain += diff
 
@@ -66,43 +92,38 @@ def compute_elevation_gain(geometry: LineString):
 
 
 # ============================================================
-# 3. Difficulty score (light Naismith rule)
+# 3. Difficulty scoring (walk-friendly)
 # ============================================================
 def score_difficulty(length_m, elevation_gain):
     """
-    Difficulty score = km + elevation_gain/100
+    difficulty_score = km + elevation/100
     """
 
-    diff_value = (length_m / 1000) + (elevation_gain / 100)
+    score = (length_m / 1000.0) + (elevation_gain / 100.0)
 
-    if diff_value < 2:
+    if score < 2:
         level = "Easy"
-    elif diff_value < 5:
+    elif score < 5:
         level = "Moderate"
     else:
         level = "Hard"
 
-    return level, round(diff_value, 2)
+    return level, round(score, 2)
 
 
 # ============================================================
 # 4. Scenic scoring
 # ============================================================
 def score_scenic(props):
-    """
-    Simple scoring based on name + surface type.
-    """
-
     scenic = 0
     name = (props.get("name") or "").lower()
     surface = props.get("surface", "")
 
-    if any(k in name for k in ["park", "lake", "river", "creek", "garden", "trail"]):
+    if any(key in name for key in ["park", "lake", "river", "creek", "garden", "trail"]):
         scenic += 2
 
     if surface in ["dirt", "gravel", "ground"]:
         scenic += 1
-
     if surface == "paved":
         scenic -= 1
 
@@ -113,19 +134,13 @@ def score_scenic(props):
 # 5. Safety scoring
 # ============================================================
 def score_safety(props):
-    """
-    Surface-based safety heuristic.
-    """
-
-    safety = 0
     surface = props.get("surface", "")
+    safety = 0
 
     if surface == "paved":
         safety += 2
-
     if surface in ["dirt", "ground"]:
         safety += 1
-
     if surface in ["rocky", "loose"]:
         safety -= 1
 
@@ -138,12 +153,6 @@ def score_safety(props):
 def score_trails(trails):
     """
     trails = output of find_nearby_trails()
-    Each trail dict contains:
-      - geometry (LineString)
-      - geometry_m
-      - properties
-      - length_m
-      - distance_from_user_m
     """
 
     results = []
@@ -151,19 +160,16 @@ def score_trails(trails):
     for t in trails:
         geom = t["geometry"]
         props = t["properties"]
-        length_m = t["length_m"]
+        length_m = float(t["length_m"])
 
-        # Elevation gain
         elev_gain = compute_elevation_gain(geom)
 
-        # Difficulty
         difficulty_level, difficulty_score = score_difficulty(length_m, elev_gain)
 
-        # Scenic + safety
         scenic_score = score_scenic(props)
         safety_score = score_safety(props)
 
-        # Output record
+        # Build record
         results.append({
             "name": props.get("name", "Unnamed Trail"),
             "length_m": round(length_m, 2),
@@ -173,15 +179,14 @@ def score_trails(trails):
             "difficulty_score": difficulty_score,
             "scenic_score": scenic_score,
             "safety_score": safety_score,
+            # FIXED: store coords correctly
             "geometry_coords": [(lat, lon) for lon, lat in geom.coords]
         })
 
-    # Sort by best “experience”:
-    # 1. Low difficulty score (easier first)
-    # 2. High scenic
-    # 3. High safety
-    results.sort(
-        key=lambda tr: (tr["difficulty_score"], -tr["scenic_score"], -tr["safety_score"])
-    )
+    # Sort by:
+    # 1. easy → hard
+    # 2. scenic high → low
+    # 3. safety high → low
+    results.sort(key=lambda tr: (tr["difficulty_score"], -tr["scenic_score"], -tr["safety_score"]))
 
     return results

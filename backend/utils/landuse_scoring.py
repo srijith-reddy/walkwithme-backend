@@ -78,4 +78,3 @@ def compute_scores_from_valhalla(route_json):
         "water": water_hits / total,
         "scenic": scenic_hits / total
     }
-

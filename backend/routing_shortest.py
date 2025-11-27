@@ -1,6 +1,5 @@
-# backend/routing_shortest.py
-
 from backend.valhalla_client import valhalla_route
+from backend.utils.polyline import decode_polyline  # you have this file already
 
 def get_shortest_route(start, end):
     """
@@ -12,9 +11,19 @@ def get_shortest_route(start, end):
 
     try:
         result = valhalla_route(start, end, costing="pedestrian")
+
+        # Valhalla returned an error
+        if "trip" not in result:
+            return {"error": "No route found from Valhalla."}
+
+        shape = result["trip"]["legs"][0]["shape"]
+
+        # ⭐ DECODE polyline → list of [lat, lon]
+        coords = decode_polyline(shape)
+
         return {
             "mode": "shortest",
-            "coordinates_polyline": result["trip"]["legs"][0]["shape"],
+            "coordinates": coords,
             "summary": result["trip"]["summary"]
         }
 

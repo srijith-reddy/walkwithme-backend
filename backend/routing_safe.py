@@ -1,6 +1,7 @@
 from backend.valhalla_client import valhalla_route
 from datetime import datetime
 import requests
+import polyline
 
 
 def is_night(lat, lon):
@@ -17,41 +18,35 @@ def is_night(lat, lon):
 
 def get_safe_route(start, end, mode="auto"):
 
-    # Auto-determine day/night
+    # Auto day/night
     if mode == "auto":
         mode = "night" if is_night(*start) else "day"
 
-    # ============================
-    # DAY SAFETY PROFILE
-    # ============================
+    # ========== DAY PROFILE ==========
     if mode == "day":
         costing_options = {
             "pedestrian": {
-                "use_roads": 0.2,        # avoid primary/secondary
-                "use_tracks": 0.2,       # avoid dirt paths unless necessary
-                "use_hills": 0.3,        # avoid steep slopes
-                "use_lit": 0.4,          # prefer lit paths but less strict
-                "safety_factor": 0.7     # general safety weight
+                "use_roads": 0.2,
+                "use_tracks": 0.2,
+                "use_hills": 0.3,
+                "use_lit": 0.4,
+                "safety_factor": 0.7
             }
         }
 
-    # ============================
-    # NIGHT SAFETY PROFILE
-    # ============================
+    # ========== NIGHT PROFILE ==========
     else:
         costing_options = {
             "pedestrian": {
-                "use_lit": 1.5,          # very strong preference for lit areas
-                "alley_factor": 8.0,     # avoid alleys HARD
-                "use_roads": 0.1,        # avoid big roads even more
-                "use_tracks": 0.0,       # avoid trails at night
-                "safety_factor": 1.3     # boost safety scoring
+                "use_lit": 1.5,
+                "alley_factor": 8.0,
+                "use_roads": 0.1,
+                "use_tracks": 0.0,
+                "safety_factor": 1.3
             }
         }
 
-    # ============================
-    # Valhalla Routing Call
-    # ============================
+    # ========== CALL VALHALLA ==========
     result = valhalla_route(
         start,
         end,
@@ -62,8 +57,14 @@ def get_safe_route(start, end, mode="auto"):
     if "trip" not in result:
         return {"error": "Valhalla failed safe route."}
 
+    # polyline string
+    poly_str = result["trip"]["legs"][0]["shape"]
+
+    # decode → list of (lat, lon)
+    coords = polyline.decode(poly_str)
+
     return {
         "mode": f"safe_{mode}",
-        "coordinates_polyline": result["trip"]["legs"][0]["shape"],
+        "coordinates": coords,     # ⭐ REQUIRED
         "summary": result["trip"]["summary"]
     }

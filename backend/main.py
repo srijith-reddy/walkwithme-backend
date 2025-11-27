@@ -9,6 +9,7 @@ import math
 import os
 import base64
 import openai
+import polyline
 
 # ------------------------------------------------------------
 # VALHALLA ROUTING ENGINE
@@ -18,12 +19,12 @@ from backend.routing import get_route
 # GPX export
 from backend.gpx.export_gpx import gpx_response
 
-# Trails (Valhalla + local PBF)
+# Trails
 from backend.trails.find_trails import find_nearby_trails
 from backend.trails.trail_scorer import score_trails
 from backend.trails.valhalla_trails import valhalla_trail_route
 
-# Elevation analyzer (independent of routing engine)
+# Elevation analyzer
 from backend.elevation import analyze_route_elevation
 
 # Geocoding utilities
@@ -60,7 +61,7 @@ HEADERS = {"User-Agent": "WalkWithMe/1.0 (srijith-github)"}
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
     dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lat2 - lon1)
+    dlon = math.radians(lon2 - lon1)
     a = (
         math.sin(dlat/2)**2 +
         math.cos(math.radians(lat1)) *
@@ -93,7 +94,6 @@ def autocomplete(
 
     q = q.strip()
 
-    # Geo bias
     if user_lat is None or user_lon is None:
         user_lat, user_lon = ip_bias(request)
 
@@ -102,9 +102,7 @@ def autocomplete(
     photon_results = []
     nominatim_results = []
 
-    # ------------------------------------------------------------
-    # PHOTON
-    # ------------------------------------------------------------
+    # Photon
     try:
         params = {"q": q, "limit": limit}
         if geo_bias_enabled:
@@ -135,9 +133,7 @@ def autocomplete(
     except:
         pass
 
-    # ------------------------------------------------------------
-    # NOMINATIM
-    # ------------------------------------------------------------
+    # Nominatim
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -156,12 +152,9 @@ def autocomplete(
     except:
         pass
 
-    # ------------------------------------------------------------
-    # MERGE + RANK
-    # ------------------------------------------------------------
     results = photon_results + nominatim_results
-    ranked = []
 
+    ranked = []
     for o in results:
         score = rapidfuzz.fuzz.ratio(q.lower(), o["label"].lower())
 
@@ -192,14 +185,14 @@ def autocomplete(
 
 
 # =============================================================
-# /route — VALHALLA routing
+# /route FIXED — WORKS WITH VALHALLA
 # =============================================================
 @app.get("/route")
 def route(start: str, end: str = None, mode: str = "shortest", duration: int = 20):
 
     lat1, lon1 = parse_location(start)
-    end_tuple = None
 
+    end_tuple = None
     if end:
         lat2, lon2 = parse_location(end)
         end_tuple = (lat2, lon2)
@@ -208,19 +201,32 @@ def route(start: str, end: str = None, mode: str = "shortest", duration: int = 2
     if mode not in allowed:
         raise HTTPException(400, f"Invalid mode '{mode}'")
 
+    # Run router
     try:
         result = get_route((lat1, lon1), end_tuple, mode, duration)
     except Exception as e:
         raise HTTPException(500, f"Routing failed: {e}")
 
-    if "error" in result:
-        raise HTTPException(404, result["error"])
-
+    # -------------------------
+    # FIX: SUPPORT POLYLINE
+    # -------------------------
     if "coordinates" not in result:
-        raise HTTPException(404, "Route not found")
+        if "coordinates_polyline" not in result:
+            raise HTTPException(404, "Route not found")
 
-    # Elevation profile
+        try:
+            coords = polyline.decode(result["coordinates_polyline"])
+        except:
+            raise HTTPException(500, "Polyline decode failed")
+
+        result["coordinates"] = coords
+
+    if not result["coordinates"]:
+        raise HTTPException(404, "No coordinates generated")
+
+    # Elevation
     result["elevation"] = analyze_route_elevation(result["coordinates"])
+
     return result
 
 
@@ -238,7 +244,7 @@ def trails(start: str, radius: int = 2000, limit: int = 5):
 
 
 # =============================================================
-# /trail_route (Valhalla)
+# /trail_route
 # =============================================================
 @app.get("/trail_route")
 def trail_route(start: str, end: str):
@@ -276,7 +282,7 @@ def export_gpx(start: str, end: str, mode: str = "shortest"):
 
 
 # =============================================================
-# /vision — GPT-4o Vision for AR Level 3
+# /vision (unchanged)
 # =============================================================
 class VisionRequest(BaseModel):
     image_b64: str
@@ -289,13 +295,50 @@ class VisionRequest(BaseModel):
 async def vision(payload: VisionRequest):
 
     system_prompt = """
-You are WALKR AR Vision — a smart urban-walking assistant.
-Use only YOLO detections.
-Describe hazards, clear path, or obstacles.
-Neutral tone: say “people”, never age/gender.
-Focus on cars, intersections, bikes, sidewalks.
-If unsure: say “uncertain”.
-Return JSON only.
+You are WALKR AR Vision — a real-time safety assistant for walking navigation.
+
+You analyze:
+- YOLO detections
+- Camera frame
+- User heading
+- Distance to the next navigation step
+
+Your job:
+1. Identify **only meaningful hazards**.
+2. Ignore harmless items (parked cars, distant people, objects far from path).
+3. Warn ONLY when something may affect user safety or navigation.
+4. Never hallucinate objects not in YOLO detections.
+5. Always stay calm, minimal, and factual.
+
+Rules:
+- DO NOT warn about:
+    - people who are not in the user's direct walking path
+    - parked cars unless blocking sidewalk
+    - bikes or cars that are stationary and far away
+    - unrelated objects (bags, signs, poles unless blocking path)
+- Warn ONLY IF:
+    - something is blocking the sidewalk
+    - a moving car/bike is approaching
+    - a person is directly in path
+    - an intersection/crossing is ahead
+    - visibility is poor
+- Keep descriptions focused and short.
+- Never guess age, gender, race, or identity.
+- For people, just say "people".
+- If uncertain, say "uncertain".
+
+Respond ONLY in this JSON structure:
+
+{
+  "hazards": [],
+  "path_status": "",
+  "recommendation": ""
+}
+
+Where:
+- hazards: ONLY real risks (e.g., "bike approaching", "sidewalk blocked").
+- path_status: "clear", "partially blocked", "obstructed", or "uncertain".
+- recommendation: brief, non-intrusive guidance ("continue", "slow down", "shift right").
 """
 
     messages = [
@@ -303,18 +346,17 @@ Return JSON only.
         {
             "role": "user",
             "content": [
-                {
-                    "type": "text",
-                    "text": f"""
+                {"type": "text",
+                 "text": f"""
 YOLO detections: {payload.detections}
 Heading: {payload.heading}
 Distance: {payload.distance_to_next}
 """
                 },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{payload.image_b64}"}
-                },
+                {"type": "image_url",
+                 "image_url": {
+                     "url": f"data:image/jpeg;base64,{payload.image_b64}"
+                 }},
             ]
         }
     ]

@@ -6,7 +6,7 @@ from shapely.ops import transform
 import pyproj
 
 # Your Valhalla URL
-VALHALLA_URL = "http://165.227.188.199:8002" 
+VALHALLA_URL = "http://165.227.188.199:8002"  # change to your Fly.io endpoint
 
 
 # ============================================================
@@ -87,4 +87,3 @@ def find_nearby_trails(lat, lon, radius=2000):
         })
 
     return trails
-
