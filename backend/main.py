@@ -11,9 +11,9 @@ import base64
 import openai
 import polyline
 
-# ------------------------------------------------------------
-# VALHALLA ROUTING ENGINE
-# ------------------------------------------------------------
+# ---------------------------
+# ROUTING ENGINE (Valhalla)
+# ---------------------------
 from backend.routing import get_route
 
 # GPX export
@@ -32,7 +32,7 @@ from backend.utils.geo import geocode, reverse_geocode, parse_location
 
 
 # =============================================================
-# CONFIGURE APP
+# CONFIG
 # =============================================================
 app = FastAPI(title="Walk With Me API — VALHALLA MODE")
 
@@ -46,13 +46,12 @@ app.add_middleware(
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+HEADERS = {"User-Agent": "WalkWithMe/1.0 (srijith-github)"}
+
 
 @app.get("/")
 def home():
     return {"message": "Walk With Me is running 🚶‍♂️ — VALHALLA MODE"}
-
-
-HEADERS = {"User-Agent": "WalkWithMe/1.0 (srijith-github)"}
 
 
 # =============================================================
@@ -63,10 +62,10 @@ def haversine(lat1, lon1, lat2, lon2):
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = (
-        math.sin(dlat/2)**2 +
+        math.sin(dlat / 2) ** 2 +
         math.cos(math.radians(lat1)) *
         math.cos(math.radians(lat2)) *
-        math.sin(dlon/2)**2
+        math.sin(dlon / 2) ** 2
     )
     return R * 2 * math.asin(math.sqrt(a))
 
@@ -91,13 +90,12 @@ def autocomplete(
     user_lon: float | None = None,
     limit: int = 7
 ):
-
     q = q.strip()
 
     if user_lat is None or user_lon is None:
         user_lat, user_lon = ip_bias(request)
 
-    geo_bias_enabled = (user_lat is not None and user_lon is not None)
+    geo_bias_enabled = user_lat is not None and user_lon is not None
 
     photon_results = []
     nominatim_results = []
@@ -109,7 +107,8 @@ def autocomplete(
             params["lat"] = user_lat
             params["lon"] = user_lon
 
-        r = requests.get("https://photon.komoot.io/api/", params=params, timeout=4).json()
+        r = requests.get("https://photon.komoot.io/api/",
+                         params=params, timeout=4).json()
 
         for f in r.get("features", []):
             props = f["properties"]
@@ -185,7 +184,7 @@ def autocomplete(
 
 
 # =============================================================
-# /route FIXED — WORKS WITH VALHALLA
+# /route — FINAL PRODUCTION VERSION
 # =============================================================
 @app.get("/route")
 def route(start: str, end: str = None, mode: str = "shortest", duration: int = 20):
@@ -198,24 +197,22 @@ def route(start: str, end: str = None, mode: str = "shortest", duration: int = 2
         end_tuple = (lat2, lon2)
 
     allowed = {"shortest", "safe", "scenic", "explore", "elevation", "best", "loop"}
+
     if mode not in allowed:
         raise HTTPException(400, f"Invalid mode '{mode}'")
 
-    # Run router
     try:
         result = get_route((lat1, lon1), end_tuple, mode, duration)
     except Exception as e:
         raise HTTPException(500, f"Routing failed: {e}")
 
-    # -------------------------
-    # FIX: SUPPORT POLYLINE
-    # -------------------------
+    # Ensure coordinates exist (decode polyline fallback)
     if "coordinates" not in result:
         if "coordinates_polyline" not in result:
             raise HTTPException(404, "Route not found")
 
         try:
-            coords = polyline.decode(result["coordinates_polyline"])
+            coords = polyline.decode(result["coordinates_polyline"], precision=6)
         except:
             raise HTTPException(500, "Polyline decode failed")
 
@@ -224,7 +221,7 @@ def route(start: str, end: str = None, mode: str = "shortest", duration: int = 2
     if not result["coordinates"]:
         raise HTTPException(404, "No coordinates generated")
 
-    # Elevation
+    # Elevation analysis
     result["elevation"] = analyze_route_elevation(result["coordinates"])
 
     return result

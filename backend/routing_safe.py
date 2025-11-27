@@ -2,8 +2,12 @@ from backend.valhalla_client import valhalla_route
 from datetime import datetime
 import requests
 import polyline
+import math
 
 
+# -------------------------------------------------------------
+# CHECK DAY/NIGHT
+# -------------------------------------------------------------
 def is_night(lat, lon):
     try:
         url = f"https://api.sunrise-sunset.org/json?lat={lat}&lng={lon}&formatted=0"
@@ -16,13 +20,55 @@ def is_night(lat, lon):
         return False
 
 
+# -------------------------------------------------------------
+# SIMPLE AR WAYPOINT REDUCER
+# -------------------------------------------------------------
+def simplify_waypoints(coords, step=5):
+    return coords[::step] if len(coords) > step else coords
+
+
+# -------------------------------------------------------------
+# TURN LOGIC
+# -------------------------------------------------------------
+def compute_next_turn(steps, coords):
+    if steps and len(steps) > 0:
+        m = steps[0]
+        return {
+            "type": m.get("type", ""),
+            "instruction": m.get("instruction", ""),
+            "distance_m": m.get("length", 0),
+            "lat": m.get("begin_shape_index", None),
+            "lon": m.get("end_shape_index", None),
+        }
+
+    # fallback: straight bearing
+    if len(coords) >= 2:
+        lat1, lon1 = coords[0]
+        lat2, lon2 = coords[1]
+        bearing = math.degrees(math.atan2(lon2 - lon1, lat2 - lat1))
+
+        return {
+            "type": "straight",
+            "instruction": "Continue straight",
+            "degrees": bearing,
+            "distance_m": 5
+        }
+
+    return None
+
+
+# -------------------------------------------------------------
+# MAIN SAFE ROUTE
+# -------------------------------------------------------------
 def get_safe_route(start, end, mode="auto"):
 
-    # Auto day/night
+    # Determine profile automatically
     if mode == "auto":
         mode = "night" if is_night(*start) else "day"
 
-    # ========== DAY PROFILE ==========
+    # ---------------------------------------------------------
+    # COSTING PROFILES
+    # ---------------------------------------------------------
     if mode == "day":
         costing_options = {
             "pedestrian": {
@@ -33,9 +79,9 @@ def get_safe_route(start, end, mode="auto"):
                 "safety_factor": 0.7
             }
         }
+        safety_score = 0.75
 
-    # ========== NIGHT PROFILE ==========
-    else:
+    else:  # night
         costing_options = {
             "pedestrian": {
                 "use_lit": 1.5,
@@ -45,8 +91,11 @@ def get_safe_route(start, end, mode="auto"):
                 "safety_factor": 1.3
             }
         }
+        safety_score = 0.90  # night score higher relevance
 
-    # ========== CALL VALHALLA ==========
+    # ---------------------------------------------------------
+    # CALL VALHALLA
+    # ---------------------------------------------------------
     result = valhalla_route(
         start,
         end,
@@ -57,14 +106,56 @@ def get_safe_route(start, end, mode="auto"):
     if "trip" not in result:
         return {"error": "Valhalla failed safe route."}
 
-    # polyline string
-    poly_str = result["trip"]["legs"][0]["shape"]
+    leg = result["trip"]["legs"][0]
+    summary = result["trip"]["summary"]
 
-    # decode → list of (lat, lon)
-    coords = polyline.decode(poly_str)
+    # ---------------------------------------------------------
+    # POLYLINE6 → COORDS
+    # ---------------------------------------------------------
+    shape = leg["shape"]
+    coords = polyline.decode(shape, precision=6)
 
+    # ---------------------------------------------------------
+    # STEPS / MANEUVERS
+    # ---------------------------------------------------------
+    steps = []
+    if "maneuvers" in leg:
+        for m in leg["maneuvers"]:
+            steps.append({
+                "instruction": m.get("instruction", ""),
+                "type": m.get("type", ""),
+                "length": m.get("length", 0),
+                "begin_lat": m.get("begin_shape_index", None),
+                "end_lat": m.get("end_shape_index", None),
+            })
+
+    # ---------------------------------------------------------
+    # WAYPOINTS FOR AR
+    # ---------------------------------------------------------
+    waypoints = simplify_waypoints(coords, step=5)
+
+    # ---------------------------------------------------------
+    # NEXT TURN
+    # ---------------------------------------------------------
+    next_turn = compute_next_turn(steps, coords)
+
+    # ---------------------------------------------------------
+    # FINAL GOLD STANDARD JSON
+    # ---------------------------------------------------------
     return {
         "mode": f"safe_{mode}",
-        "coordinates": coords,     # ⭐ REQUIRED
-        "summary": result["trip"]["summary"]
+
+        "coordinates": coords,
+        "waypoints": waypoints,
+
+        "steps": steps,
+        "next_turn": next_turn,
+
+        "distance_m": summary.get("length", 0) * 1000,
+        "duration_s": summary.get("time", 0),
+
+        "summary": summary,
+
+        "safety_score": safety_score,
+        "ai_best_score": 0.88,   # placeholder for AI mode
     }

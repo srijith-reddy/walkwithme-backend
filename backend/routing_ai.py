@@ -8,7 +8,40 @@ from backend.valhalla_client import valhalla_route
 
 
 # ============================================================
-# WEATHER (Open-Meteo – keyless)
+# HELPERS (waypoints + next turn)
+# ============================================================
+def simplify_waypoints(coords, step=5):
+    return coords[::step] if len(coords) > step else coords
+
+
+def compute_next_turn(steps, coords):
+    if steps:
+        m = steps[0]
+        return {
+            "type": m.get("type", ""),
+            "instruction": m.get("instruction", ""),
+            "distance_m": m.get("length", 0),
+            "lat": m.get("begin_shape_index", None),
+            "lon": m.get("end_shape_index", None),
+        }
+
+    # fallback bearing
+    if len(coords) >= 2:
+        lat1, lon1 = coords[0]
+        lat2, lon2 = coords[1]
+        bearing = math.degrees(math.atan2(lon2 - lon1, lat2 - lat1))
+        return {
+            "type": "straight",
+            "instruction": "Continue straight",
+            "degrees": bearing,
+            "distance_m": 5,
+        }
+
+    return None
+
+
+# ============================================================
+# WEATHER (Open-Meteo)
 # ============================================================
 def get_weather(lat, lon):
     try:
@@ -16,8 +49,7 @@ def get_weather(lat, lon):
             f"https://api.open-meteo.com/v1/forecast?"
             f"latitude={lat}&longitude={lon}&current_weather=true"
         )
-        j = requests.get(url, timeout=5).json()
-        w = j["current_weather"]
+        w = requests.get(url, timeout=5).json()["current_weather"]
 
         code = int(w["weathercode"])
         temp = float(w["temperature"])
@@ -25,15 +57,15 @@ def get_weather(lat, lon):
         if code in [61, 63, 65]: return "rain"
         if code in [71, 73, 75]: return "snow"
         if temp > 30: return "hot"
-        if temp < 5:  return "cold"
+        if temp < 5: return "cold"
         return "clear"
 
-    except Exception:
+    except:
         return "clear"
 
 
 # ============================================================
-# DAY/NIGHT CHECK
+# DAY/NIGHT
 # ============================================================
 def is_night(lat, lon):
     try:
@@ -43,16 +75,16 @@ def is_night(lat, lon):
         ).json()["results"]
 
         sunrise = datetime.fromisoformat(r["sunrise"])
-        sunset  = datetime.fromisoformat(r["sunset"])
+        sunset = datetime.fromisoformat(r["sunset"])
         now = datetime.utcnow()
 
         return not (sunrise <= now <= sunset)
-    except Exception:
+    except:
         return False
 
 
 # ============================================================
-# COSTING PRESETS (ONLY VALID VALHALLA KEYS)
+# COSTING PRESETS
 # ============================================================
 def build_costings(start):
     lat, lon = start
@@ -61,90 +93,32 @@ def build_costings(start):
 
     presets = []
 
-    # 1. BASE
-    presets.append((
-        "base",
-        {"pedestrian": {
-            "use_roads": 0.5,
-            "use_hills": 0.5,
-            "use_lit": 0.5,
-        }}
-    ))
+    presets.append(("base",      {"pedestrian": {"use_roads": 0.5, "use_hills": 0.5, "use_lit": 0.5}}))
+    presets.append(("scenic",    {"pedestrian": {"use_roads": 0.2, "use_hills": 0.4, "use_lit": 0.5}}))
+    presets.append(("safe_day",  {"pedestrian": {"use_roads": 0.2, "use_hills": 0.3, "use_lit": 0.6, "safety_factor": 0.7}}))
+    presets.append(("safe_night",{"pedestrian": {"use_roads": 0.1, "use_hills": 0.3, "use_lit": 1.5, "safety_factor": 1.5}}))
+    presets.append(("explore",   {"pedestrian": {"use_roads": 0.3, "use_hills": 0.2, "use_lit": 0.4, "safety_factor": 0.8}}))
 
-    # 2. SCENIC
-    presets.append((
-        "scenic",
-        {"pedestrian": {
-            "use_roads": 0.2,
-            "use_hills": 0.4,
-            "use_lit": 0.5,
-        }}
-    ))
-
-    # 3. SAFE DAY
-    presets.append((
-        "safe_day",
-        {"pedestrian": {
-            "use_roads": 0.2,
-            "use_hills": 0.3,
-            "use_lit": 0.6,
-            "safety_factor": 0.7,
-        }}
-    ))
-
-    # 4. SAFE NIGHT
-    presets.append((
-        "safe_night",
-        {"pedestrian": {
-            "use_roads": 0.1,
-            "use_hills": 0.3,
-            "use_lit": 1.5,
-            "safety_factor": 1.5,
-        }}
-    ))
-
-    # 5. EXPLORE
-    presets.append((
-        "explore",
-        {"pedestrian": {
-            "use_roads": 0.3,
-            "use_hills": 0.2,
-            "use_lit": 0.4,
-            "safety_factor": 0.8,
-        }}
-    ))
-
-    # Weather-specific
     if weather == "rain":
-        presets.append((
-            "rain_route",
-            {"pedestrian": {
-                "use_roads": 0.2,
-                "use_hills": 0.1,
-                "use_lit": 0.9,
-            }}
+        presets.append(("rain_route",
+            {"pedestrian": {"use_roads": 0.2, "use_hills": 0.1, "use_lit": 0.9}}
         ))
 
     if weather == "snow":
-        presets.append((
-            "snow_route",
-            {"pedestrian": {
-                "use_roads": 0.2,
-                "use_hills": 0.0,
-                "use_lit": 1.0,
-                "safety_factor": 1.3,
-            }}
+        presets.append(("snow_route",
+            {"pedestrian": {"use_roads": 0.2, "use_hills": 0.0, "use_lit": 1.0, "safety_factor": 1.3}}
         ))
 
     return presets, weather, night
 
 
 # ============================================================
-# SCORING FUNCTION (AI chooses best)
+# AI SCORING
 # ============================================================
-def score_route(label, weather, night, trip_summary):
-    length = trip_summary.get("length", 1) / 1000.0  # convert meters → km
-    time   = trip_summary.get("time", 1)
+def score_route(label, weather, night, summary):
+    length_km = summary.get("length", 1) / 1000.0
+    time = summary.get("time", 1)
+    max_up = summary.get("max_up_slope", 0)
 
     score = 0
 
@@ -156,21 +130,20 @@ def score_route(label, weather, night, trip_summary):
     if label == "rain_route": score += 2
     if label == "snow_route": score += 3
 
-    # Hills bad for rain/snow/heat
+    # weather penalties
     if weather in ["rain", "snow", "hot"]:
-        score -= (trip_summary.get("max_up_slope", 0) * 2)
+        score -= (max_up * 2)
 
     if night and "safe" in label:
         score += 2
 
-    # Soft penalty for long distances
-    score -= (length / 5.0)
+    score -= (length_km / 5.0)
 
     return score
 
 
 # ============================================================
-# AI BEST ROUTE (A → B)
+# AI BEST ROUTE
 # ============================================================
 def get_ai_best_route(start, end):
     costings, weather, night = build_costings(start)
@@ -178,23 +151,39 @@ def get_ai_best_route(start, end):
     candidates = []
 
     for label, options in costings:
-        result = valhalla_route(start, end, "pedestrian", options)
 
+        result = valhalla_route(start, end, "pedestrian", options)
         if "trip" not in result:
             continue
 
         leg = result["trip"]["legs"][0]
-        poly = leg["shape"]
-        coords = polyline.decode(poly)
         summary = result["trip"]["summary"]
+
+        # decode polyline6
+        coords = polyline.decode(leg["shape"], precision=6)
+
+        # steps
+        maneuvers = leg.get("maneuvers", [])
+        steps = [{
+            "instruction": m.get("instruction", ""),
+            "type": m.get("type", ""),
+            "length": m.get("length", 0),
+            "begin_lat": m.get("begin_shape_index", None),
+            "end_lat": m.get("end_shape_index", None),
+        } for m in maneuvers]
+
+        waypoints = simplify_waypoints(coords)
+        next_turn = compute_next_turn(steps, coords)
 
         score = score_route(label, weather, night, summary)
 
         candidates.append({
             "label": label,
             "score": score,
-            "polyline": poly,
-            "coordinates": coords,
+            "coords": coords,
+            "waypoints": waypoints,
+            "steps": steps,
+            "next_turn": next_turn,
             "summary": summary,
         })
 
@@ -205,38 +194,37 @@ def get_ai_best_route(start, end):
 
     return {
         "mode": "best",
+        "variant": best["label"],
         "weather": weather,
         "night": night,
-        "variant": best["label"],
         "score": best["score"],
-        "start": start,
-        "end": end,
-        "coordinates": best["coordinates"],
-        "polyline": best["polyline"],
+        "coordinates": best["coords"],
+        "waypoints": best["waypoints"],
+        "steps": best["steps"],
+        "next_turn": best["next_turn"],
         "summary": best["summary"],
     }
 
 
 # ============================================================
-# AI LOOP ROUTE (start → loop → start)
+# AI LOOP ROUTE
 # ============================================================
 def get_ai_loop_route(center, target_km=5.0):
     if not center:
         return {"error": "Missing center coordinates"}
 
     lat0, lon0 = center
-
     costings, weather, night = build_costings(center)
+
     loops = []
-
     radius_km = max(0.8, target_km / 2.0)
-
     angles = [45, 120, 210, 300]
 
-    for label, opt in costings:
+    for label, options in costings:
         for angle in angles:
             theta = math.radians(angle)
 
+            # compute midpoint
             d = radius_km
             d_lat = (d / 111.0) * math.cos(theta)
             lon_scale = 111.0 * max(0.1, math.cos(math.radians(lat0)))
@@ -244,43 +232,43 @@ def get_ai_loop_route(center, target_km=5.0):
 
             mid = (lat0 + d_lat, lon0 + d_lon)
 
-            out_res = valhalla_route(center, mid, "pedestrian", opt)
-            back_res = valhalla_route(mid, center, "pedestrian", opt)
+            out_r = valhalla_route(center, mid, "pedestrian", options)
+            back_r = valhalla_route(mid, center, "pedestrian", options)
 
-            if "trip" not in out_res or "trip" not in back_res:
+            if "trip" not in out_r or "trip" not in back_r:
                 continue
 
-            out_leg = out_res["trip"]["legs"][0]
-            back_leg = back_res["trip"]["legs"][0]
+            out_leg = out_r["trip"]["legs"][0]
+            back_leg = back_r["trip"]["legs"][0]
 
-            out_coords = polyline.decode(out_leg["shape"])
-            back_coords = polyline.decode(back_leg["shape"])
+            out_coords = polyline.decode(out_leg["shape"], precision=6)
+            back_coords = polyline.decode(back_leg["shape"], precision=6)
 
             loop_coords = out_coords + back_coords[1:]
 
-            length_km = (
-                out_res["trip"]["summary"]["length"] +
-                back_res["trip"]["summary"]["length"]
-            ) / 1000.0  # meters → km
+            total_km = (
+                out_r["trip"]["summary"]["length"] +
+                back_r["trip"]["summary"]["length"]
+            ) / 1000.0
 
             combined_summary = {
-                "time": out_res["trip"]["summary"]["time"] +
-                        back_res["trip"]["summary"]["time"],
-                "length": length_km,
+                "time": out_r["trip"]["summary"]["time"] +
+                        back_r["trip"]["summary"]["time"],
+                "length": total_km * 1000,
                 "max_up_slope": max(
-                    out_res["trip"]["summary"].get("max_up_slope", 0),
-                    back_res["trip"]["summary"].get("max_up_slope", 0),
+                    out_r["trip"]["summary"].get("max_up_slope", 0),
+                    back_r["trip"]["summary"].get("max_up_slope", 0),
                 ),
             }
 
-            base_score = score_route(label, weather, night, {
-                "length": length_km * 1000,
-                "time": combined_summary["time"],
-                "max_up_slope": combined_summary["max_up_slope"]
-            })
+            base_score = score_route(
+                label, weather, night,
+                {"length": combined_summary["length"],
+                 "time": combined_summary["time"],
+                 "max_up_slope": combined_summary["max_up_slope"]}
+            )
 
-            penalty = abs(length_km - target_km)
-
+            penalty = abs(total_km - target_km)
             final_score = base_score - penalty
 
             loops.append({
@@ -288,7 +276,7 @@ def get_ai_loop_route(center, target_km=5.0):
                 "angle": angle,
                 "score": final_score,
                 "coordinates": loop_coords,
-                "polyline": polyline.encode(loop_coords),
+                "waypoints": simplify_waypoints(loop_coords),
                 "summary": combined_summary,
             })
 
@@ -299,14 +287,13 @@ def get_ai_loop_route(center, target_km=5.0):
 
     return {
         "mode": "loop",
+        "variant": best["label"],
         "weather": weather,
         "night": night,
-        "variant": best["label"],
-        "angle": best["angle"],
         "score": best["score"],
-        "center": center,
+        "angle": best["angle"],
         "target_km": target_km,
         "coordinates": best["coordinates"],
-        "polyline": best["polyline"],
+        "waypoints": best["waypoints"],
         "summary": best["summary"],
     }
