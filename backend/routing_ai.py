@@ -387,7 +387,7 @@ def get_ai_loop_route(center, target_km=5.0):
 
             loop_km += step
 
-        summary = {"length": loop_km * 1000}
+        summary = {"length": loop_km}
 
         # =========================================================
         # 6) AI scoring 🔥
