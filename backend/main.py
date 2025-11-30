@@ -244,23 +244,25 @@ def autocomplete(
         pass
 
     osm_results = photon_results + nominatim_results
-
+    
     # ----------------------------------------------------------
-    # 3. Should we call Google?
+    # TRIGGER GOOGLE ONLY IF OSM FAILS
     # ----------------------------------------------------------
     should_use_google = False
-
-    # A) Looks like POI (e.g., "cafes", "thai food")
-    if looks_like_poi:
-        should_use_google = True
-
-    # B) Query doesn't look like a clean address
-    if not looks_like_address and len(q.split()) <= 3:
-        should_use_google = True
-
-    # C) OSM results are empty or weak
+    
     if len(osm_results) == 0:
         should_use_google = True
+    else:
+        # compute best fuzzy match OSM returned
+        best_osm_score = max(
+            rapidfuzz.fuzz.ratio(q.lower(), o["label"].lower())
+            for o in osm_results
+        )
+        
+        # if OSM is very weak (<60), fallback
+        if best_osm_score < 60:
+            should_use_google = True
+
 
     # ----------------------------------------
     # 4. Google Places Text Search (PAID)
