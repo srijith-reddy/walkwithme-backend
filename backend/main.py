@@ -251,21 +251,33 @@ def autocomplete(
     # TRIGGER GOOGLE ONLY IF OSM FAILS
     # ----------------------------------------------------------
     should_use_google = False
-    
-    if len(osm_results) == 0:
+
+    # Count OSM results
+    osm_count = len(osm_results)
+    print(f"[AUTOCOMPLETE] OSM returned {osm_count} results for '{q}'")
+
+    # 1. If user hasn't typed enough, NEVER trigger Google
+    if len(q) < 4:
+        print(f"[AUTOCOMPLETE] Google NOT triggered — query too short ('{q}')")
+        should_use_google = False
+
+    # 2. If OSM returned **zero**, trigger Google
+    elif osm_count == 0:
         should_use_google = True
         print(f"⚠️ [AUTOCOMPLETE] GOOGLE TRIGGERED — OSM empty for '{q}'")
+
+    # 3. If POI-like query (ex: 'cafes near me', 'pizza', 'restaurant')
+    elif looks_like_poi:
+        should_use_google = True
+        print(f"⚠️ [AUTOCOMPLETE] GOOGLE TRIGGERED — POI query detected ('{q}')")
+
+    # 4. Otherwise keep OSM only
     else:
         best_osm_score = max(
             rapidfuzz.fuzz.ratio(q.lower(), o["label"].lower())
             for o in osm_results
         )
-
-        if best_osm_score < 60:
-            should_use_google = True
-            print(f"⚠️ [AUTOCOMPLETE] GOOGLE TRIGGERED for '{q}' (best_osm_score={best_osm_score})")
-        else:
-            print(f"[AUTOCOMPLETE] Google NOT triggered for '{q}' (best_osm_score={best_osm_score})")
+        print(f"[AUTOCOMPLETE] Google NOT triggered for '{q}' (best_osm_score={best_osm_score})")
 
 
 
