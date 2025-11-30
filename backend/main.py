@@ -143,9 +143,8 @@ def places_search(
         "results": results
     }
 
-
 # =============================================================
-# /autocomplete (unchanged)
+# /autocomplete — SMART (OSM first, Google fallback)
 # =============================================================
 @app.get("/autocomplete")
 def autocomplete(
@@ -157,15 +156,43 @@ def autocomplete(
 ):
     q = q.strip()
 
+    # ----------------------------------------
+    # 1. Detect if query is a PLACE/POI search
+    # ----------------------------------------
+    # Heuristics:
+    # - No street number
+    # - Contains POI keywords
+    # - Multi-word query that isn't address-like
+    # - Looks like “cafe near me”
+    # ----------------------------------------
+    poi_keywords = [
+        "cafe", "coffee", "restaurant", "food", "pizza", "thai",
+        "gym", "park", "museum", "mall", "atm", "hotel",
+        "bar", "burger", "boba", "tea", "pharmacy", "clinic",
+        "movie", "cinema", "theatre", "store", "shop"
+    ]
+
+    looks_like_address = any(char.isdigit() for char in q)
+    looks_like_poi = (
+        any(k in q.lower() for k in poi_keywords) or
+        "near me" in q.lower()
+    )
+
+    # ----------------------------------------
+    # Use user location bias
+    # ----------------------------------------
     if user_lat is None or user_lon is None:
         user_lat, user_lon = ip_bias(request)
 
     geo_bias_enabled = user_lat is not None and user_lon is not None
 
+    # ----------------------------------------
+    # 2. First try OSM: Photon + Nominatim (FREE)
+    # ----------------------------------------
     photon_results = []
     nominatim_results = []
 
-    # Photon
+    # ----- PHOTON -----
     try:
         params = {"q": q, "limit": limit}
         if geo_bias_enabled:
@@ -197,7 +224,7 @@ def autocomplete(
     except:
         pass
 
-    # Nominatim
+    # ----- NOMINATIM -----
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -216,7 +243,62 @@ def autocomplete(
     except:
         pass
 
-    results = photon_results + nominatim_results
+    osm_results = photon_results + nominatim_results
+
+    # ----------------------------------------------------------
+    # 3. Should we call Google?
+    # ----------------------------------------------------------
+    should_use_google = False
+
+    # A) Looks like POI (e.g., "cafes", "thai food")
+    if looks_like_poi:
+        should_use_google = True
+
+    # B) Query doesn't look like a clean address
+    if not looks_like_address and len(q.split()) <= 3:
+        should_use_google = True
+
+    # C) OSM results are empty or weak
+    if len(osm_results) == 0:
+        should_use_google = True
+
+    # ----------------------------------------
+    # 4. Google Places Text Search (PAID)
+    # ----------------------------------------
+    google_results = []
+
+    if should_use_google:
+        try:
+            GOOGLE_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
+            if GOOGLE_KEY:
+                params = {
+                    "query": q,
+                    "key": GOOGLE_KEY
+                }
+                if geo_bias_enabled:
+                    params["location"] = f"{user_lat},{user_lon}"
+                    params["radius"] = 1500
+
+                gr = requests.get(
+                    "https://maps.googleapis.com/maps/api/place/textsearch/json",
+                    params=params,
+                    timeout=4
+                ).json()
+
+                for p in gr.get("results", []):
+                    google_results.append({
+                        "label": p.get("name"),
+                        "lat": p["geometry"]["location"]["lat"],
+                        "lon": p["geometry"]["location"]["lng"],
+                        "source": "google"
+                    })
+        except Exception as e:
+            print("Google Places error:", e)
+
+    # ----------------------------------------
+    # 5. Merge results → rank by similarity + distance
+    # ----------------------------------------
+    results = osm_results + google_results
 
     ranked = []
     for o in results:
@@ -226,22 +308,27 @@ def autocomplete(
             dist = haversine(user_lat, user_lon, o["lat"], o["lon"])
             o["dist_km"] = dist
 
+            # Very far + low match → drop
             if dist > 50 and score < 85:
                 continue
 
+            # Nearby places get boost
             if dist < 10:
                 score += 30
 
             score += max(0, 20 - dist)
 
+        # Photon gets small boost
         if o["source"] == "photon":
             score += 10
 
-        o["score"] = score
-        ranked.append(o)
+        ranked.append({**o, "score": score})
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
 
+    # ----------------------------------------
+    # 6. Final return shape (same as before)
+    # ----------------------------------------
     return [
         {"label": o["label"], "lat": o["lat"], "lon": o["lon"]}
         for o in ranked[:limit]
