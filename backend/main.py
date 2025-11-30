@@ -245,6 +245,8 @@ def autocomplete(
 
     osm_results = photon_results + nominatim_results
     
+    # DEBUG: Print OSM result count
+    print(f"[AUTOCOMPLETE] OSM returned {len(osm_results)} results for '{q}'")
     # ----------------------------------------------------------
     # TRIGGER GOOGLE ONLY IF OSM FAILS
     # ----------------------------------------------------------
@@ -252,16 +254,19 @@ def autocomplete(
     
     if len(osm_results) == 0:
         should_use_google = True
+        print(f"⚠️ [AUTOCOMPLETE] GOOGLE TRIGGERED — OSM empty for '{q}'")
     else:
-        # compute best fuzzy match OSM returned
         best_osm_score = max(
             rapidfuzz.fuzz.ratio(q.lower(), o["label"].lower())
             for o in osm_results
         )
-        
-        # if OSM is very weak (<60), fallback
+
         if best_osm_score < 60:
             should_use_google = True
+            print(f"⚠️ [AUTOCOMPLETE] GOOGLE TRIGGERED for '{q}' (best_osm_score={best_osm_score})")
+        else:
+            print(f"[AUTOCOMPLETE] Google NOT triggered for '{q}' (best_osm_score={best_osm_score})")
+
 
 
     # ----------------------------------------
