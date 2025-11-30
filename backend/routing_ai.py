@@ -230,62 +230,70 @@ def get_ai_loop_route(center, target_km=5.0):
 
     lat0, lon0 = center
 
-    # ---------------------------------------------------------
-    # 1) Generate random bearings around the full circle
-    # ---------------------------------------------------------
+    # =========================================================
+    # 1) Generate GOOD bearings (5–10 random bearings)
+    # =========================================================
     bearings = []
     angle = random.uniform(0, 360)
 
-    while angle < 360 + random.uniform(20, 60):
+    max_span = random.uniform(380, 460)  # full circle + randomness
+    while angle < max_span:
         bearings.append(angle % 360)
-        angle += random.uniform(35, 75)   # random spacing
+        angle += random.uniform(40, 70)  # spacing stays valid
 
-    # Need at least 4 points to make a loop
-    if len(bearings) < 4:
-        bearings = []
-        angle = random.uniform(0, 360)
-        for _ in range(4):
-            bearings.append(angle % 360)
-            angle += random.uniform(60, 100)  # random spacing between the 4 points
+    if len(bearings) < 5:
+        # fallback – guaranteed valid bearings
+        bearings = [(i * (360 / 6)) + random.uniform(-15, 15) for i in range(6)]
 
-
-    # ---------------------------------------------------------
-    # 2) Generate distances for each bearing (jitter around base radius)
-    # ---------------------------------------------------------
-    base_radius = max(0.6, target_km / (2 * math.pi))  # km
+    # =========================================================
+    # 2) Random distances around base radius
+    # =========================================================
+    base_radius = max(0.6, target_km / (2 * math.pi))
 
     distances = [
-        random.uniform(0.7 * base_radius, 1.35 * base_radius)
+        random.uniform(0.75 * base_radius, 1.3 * base_radius)
         for _ in bearings
     ]
 
-    # ---------------------------------------------------------
-    # 3) Convert (bearing, distance) → geo midpoints
-    # ---------------------------------------------------------
+    # =========================================================
+    # 3) Convert (bearing, distance) → midpoints
+    # =========================================================
     midpoints = []
 
     for ang, dist_km in zip(bearings, distances):
         theta = math.radians(ang)
-
         d_lat = (dist_km / 111.0) * math.cos(theta)
-        lon_scale = 111.0 * max(0.1, math.cos(math.radians(lat0)))
+        lon_scale = 111.0 * max(0.25, math.cos(math.radians(lat0)))
         d_lon = (dist_km / lon_scale) * math.sin(theta)
 
         midpoints.append((lat0 + d_lat, lon0 + d_lon))
 
-    # ---------------------------------------------------------
-    # 4) Try all costing presets (your original AI weather/safety logic)
-    # ---------------------------------------------------------
+    # =========================================================
+    # 3.5) SNAP midpoints to nearest valid road via Valhalla
+    # =========================================================
+    snapped_midpoints = []
+    for mp in midpoints:
+        snap = valhalla_route(mp, mp, "pedestrian")  # using locate-edge
+        if "trip" in snap:
+            snapped_midpoints.append(snap["trip"]["locations"][0])
+        else:
+            snapped_midpoints.append(mp)
+
+    midpoints = [(loc["lat"], loc["lon"]) if isinstance(loc, dict) else loc for loc in snapped_midpoints]
+
+    # =========================================================
+    # 4) Try all AI costings
+    # =========================================================
     costings, weather, night = build_costings(center)
     candidates = []
 
     for label, options in costings:
 
         all_coords = []
-        failed = False
         prev = center
+        failed = False
 
-        # Route center → mp1 → mp2 → ... → back to center
+        # route through each midpoint
         for mp in midpoints:
             seg = valhalla_route(prev, mp, "pedestrian", options)
             if "trip" not in seg:
@@ -293,41 +301,66 @@ def get_ai_loop_route(center, target_km=5.0):
                 break
 
             coords = polyline.decode(seg["trip"]["legs"][0]["shape"], precision=6)
+
+            # ---------------------------------------------------------
+            # SANITY CHECK: Reject if segment too large
+            # ---------------------------------------------------------
+            if len(coords) < 2:
+                failed = True
+                break
+
+            # compute rough segment length
+            seg_len = 0
+            for i in range(len(coords) - 1):
+                seg_len += haversine(*coords[i], *coords[i+1])
+
+            if seg_len > 2.0:  # > 2 km segment between midpoints → invalid
+                failed = True
+                break
+
             all_coords.extend(coords)
             prev = mp
 
+        # final segment back to start
+        if failed:
+            continue
+
         back = valhalla_route(prev, center, "pedestrian", options)
         if "trip" not in back:
-            failed = True
-
-        if failed:
             continue
 
         coords_back = polyline.decode(back["trip"]["legs"][0]["shape"], precision=6)
         all_coords.extend(coords_back)
 
-        if len(all_coords) < 20:
+        # clean coords (dedupe)
+        clean = []
+        seen = set()
+        for lat, lon in all_coords:
+            key = (round(lat, 6), round(lon, 6))
+            if key not in seen:
+                seen.add(key)
+                clean.append((lat, lon))
+        all_coords = clean
+
+        if len(all_coords) < 50:
             continue
 
-        # ---------------------------------------------------------
-        # 5) Compute actual loop distance
-        # ---------------------------------------------------------
+        # =========================================================
+        # 5) compute actual loop distance
+        # =========================================================
         loop_km = 0
         for i in range(len(all_coords) - 1):
-            lat1, lon1 = all_coords[i]
-            lat2, lon2 = all_coords[i + 1]
-            loop_km += haversine(lat1, lon1, lat2, lon2)
+            loop_km += haversine(*all_coords[i], *all_coords[i+1])
 
         summary = {"length": loop_km * 1000}
 
-        # ---------------------------------------------------------
-        # 6) AI scoring (your exact original scoring)
-        # ---------------------------------------------------------
+        # =========================================================
+        # 6) AI scoring
+        # =========================================================
         ai_score = score_route(label, weather, night, summary)
 
-        # Penalize deviation from target km
-        penalty = abs(loop_km - target_km)
-        final_score = ai_score - penalty
+        # penalize for deviation from target
+        final_score = ai_score - abs(loop_km - target_km)
 
         candidates.append({
             "label": label,
@@ -335,17 +368,14 @@ def get_ai_loop_route(center, target_km=5.0):
             "coordinates": all_coords,
             "summary": summary,
             "target_km": target_km,
-            "night": night,
-            "weather": weather
+            "weather": weather,
+            "night": night
         })
 
-    # ---------------------------------------------------------
-    # 7) Choose best-scoring loop variant
-    # ---------------------------------------------------------
     if not candidates:
         return {"error": "Could not generate loop"}
 
-    best = max(candidates, key=lambda x: x["score"])
+    best = max(candidates, key=lambda c: c["score"])
 
     return {
         "mode": "loop",
