@@ -48,6 +48,8 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 HEADERS = {"User-Agent": "WalkWithMe/1.0 (srijith-github)"}
 
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "YOUR_API_KEY_HERE")
+
 
 @app.get("/")
 def home():
@@ -80,7 +82,70 @@ def ip_bias(request: Request):
 
 
 # =============================================================
-# /autocomplete
+# GOOGLE PLACES SEARCH (NEW)
+# =============================================================
+def places_text_search(query: str, lat: float, lon: float):
+    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+
+    params = {
+        "query": query,
+        "location": f"{lat},{lon}",
+        "radius": 3000,
+        "key": GOOGLE_PLACES_API_KEY
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=5).json()
+    except Exception as e:
+        raise HTTPException(500, f"Google Places failed: {e}")
+
+    results = []
+    for place in r.get("results", []):
+        loc = place["geometry"]["location"]
+        p_lat = loc["lat"]
+        p_lon = loc["lng"]
+
+        results.append({
+            "name": place.get("name"),
+            "address": place.get("formatted_address"),
+            "rating": place.get("rating"),
+            "reviews": place.get("user_ratings_total"),
+            "lat": p_lat,
+            "lon": p_lon,
+            "open_now": place.get("opening_hours", {}).get("open_now"),
+            "distance_km": round(haversine(lat, lon, p_lat, p_lon), 3)
+        })
+
+    return results
+
+
+# =============================================================
+# /places_search (NEW ENDPOINT)
+# =============================================================
+@app.get("/places_search")
+def places_search(
+    request: Request,
+    q: str = Query(..., min_length=1),
+    user_lat: float | None = None,
+    user_lon: float | None = None
+):
+    if user_lat is None or user_lon is None:
+        user_lat, user_lon = ip_bias(request)
+
+    if user_lat is None or user_lon is None:
+        raise HTTPException(400, "Missing user location.")
+
+    results = places_text_search(q, user_lat, user_lon)
+
+    return {
+        "query": q,
+        "count": len(results),
+        "results": results
+    }
+
+
+# =============================================================
+# /autocomplete (unchanged)
 # =============================================================
 @app.get("/autocomplete")
 def autocomplete(
@@ -184,7 +249,7 @@ def autocomplete(
 
 
 # =============================================================
-# /route — FINAL PRODUCTION VERSION
+# /route — FINAL PRODUCTION VERSION (unchanged)
 # =============================================================
 @app.get("/route")
 def route(start: str, end: str = None, mode: str = "shortest", duration: int = 20):
@@ -228,7 +293,7 @@ def route(start: str, end: str = None, mode: str = "shortest", duration: int = 2
 
 
 # =============================================================
-# /trails
+# /trails (unchanged)
 # =============================================================
 @app.get("/trails")
 def trails(start: str, radius: int = 2000, limit: int = 5):
@@ -241,7 +306,7 @@ def trails(start: str, radius: int = 2000, limit: int = 5):
 
 
 # =============================================================
-# /trail_route
+# /trail_route (unchanged)
 # =============================================================
 @app.get("/trail_route")
 def trail_route(start: str, end: str):
@@ -254,7 +319,7 @@ def trail_route(start: str, end: str):
 
 
 # =============================================================
-# /reverse_geocode
+# /reverse_geocode (unchanged)
 # =============================================================
 @app.get("/reverse_geocode")
 def reverse_geocode_endpoint(coords: str):
@@ -266,7 +331,7 @@ def reverse_geocode_endpoint(coords: str):
 
 
 # =============================================================
-# /export_gpx
+# /export_gpx (unchanged)
 # =============================================================
 @app.get("/export_gpx")
 def export_gpx(start: str, end: str, mode: str = "shortest"):
@@ -331,11 +396,6 @@ Respond ONLY in this JSON structure:
   "path_status": "",
   "recommendation": ""
 }
-
-Where:
-- hazards: ONLY real risks (e.g., "bike approaching", "sidewalk blocked").
-- path_status: "clear", "partially blocked", "obstructed", or "uncertain".
-- recommendation: brief, non-intrusive guidance ("continue", "slow down", "shift right").
 """
 
     messages = [
@@ -370,3 +430,4 @@ Distance: {payload.distance_to_next}
 
     except Exception as e:
         raise HTTPException(500, f"Vision failed: {e}")
+
