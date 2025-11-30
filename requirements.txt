@@ -7,10 +7,8 @@ requests
 pydantic
 python-dotenv
 rapidfuzz
-
 # Pin to the correct modern SDK (supports JSON mode, images, chat, etc.)
-openai>=1.14.0
-
+openai==0.28.1
 rtree
 fiona
 shapely
