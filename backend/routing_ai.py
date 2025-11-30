@@ -214,86 +214,101 @@ def get_ai_loop_route(center, target_km=5.0):
         return {"error": "Missing center coordinates"}
 
     lat0, lon0 = center
+    radius_km = max(0.6, target_km / (2 * math.pi))  # adjust radius based on full circle
+
+    # Produce 8-point smooth circle
+    angles = [0, 45, 90, 135, 180, 225, 270, 315]
+
+    # circle midpoints
+    midpoints = []
+    for ang in angles:
+        theta = math.radians(ang)
+        d_lat = (radius_km / 111.0) * math.cos(theta)
+        lon_scale = 111.0 * max(0.1, math.cos(math.radians(lat0)))
+        d_lon = (radius_km / lon_scale) * math.sin(theta)
+
+        midpoints.append((lat0 + d_lat, lon0 + d_lon))
+
+    # Build costings
     costings, weather, night = build_costings(center)
 
-    loops = []
-    radius_km = max(0.8, target_km / 2.0)
-    angles = [45, 120, 210, 300]
+    candidates = []
 
+    # Try all safety/scenic/weather presets
     for label, options in costings:
-        for angle in angles:
-            theta = math.radians(angle)
 
-            # compute midpoint
-            d = radius_km
-            d_lat = (d / 111.0) * math.cos(theta)
-            lon_scale = 111.0 * max(0.1, math.cos(math.radians(lat0)))
-            d_lon = (d / lon_scale) * math.sin(theta)
+        all_coords = []
+        failed = False
 
-            mid = (lat0 + d_lat, lon0 + d_lon)
+        # Start = center
+        prev = center
 
-            out_r = valhalla_route(center, mid, "pedestrian", options)
-            back_r = valhalla_route(mid, center, "pedestrian", options)
+        # Connect each midpoint in order
+        for mp in midpoints:
+            seg = valhalla_route(prev, mp, "pedestrian", options)
+            if "trip" not in seg:
+                failed = True
+                break
 
-            if "trip" not in out_r or "trip" not in back_r:
-                continue
+            coords = polyline.decode(seg["trip"]["legs"][0]["shape"], precision=6)
+            all_coords += coords
+            prev = mp
 
-            out_leg = out_r["trip"]["legs"][0]
-            back_leg = back_r["trip"]["legs"][0]
+        # Connect final midpoint back to start
+        back = valhalla_route(prev, center, "pedestrian", options)
+        if "trip" not in back:
+            continue
 
-            out_coords = polyline.decode(out_leg["shape"], precision=6)
-            back_coords = polyline.decode(back_leg["shape"], precision=6)
+        coords_back = polyline.decode(back["trip"]["legs"][0]["shape"], precision=6)
+        all_coords += coords_back
 
-            loop_coords = out_coords + back_coords[1:]
+        if failed or len(all_coords) < 20:
+            continue
 
-            total_km = (
-                out_r["trip"]["summary"]["length"] +
-                back_r["trip"]["summary"]["length"]
-            ) / 1000.0
-
-            combined_summary = {
-                "time": out_r["trip"]["summary"]["time"] +
-                        back_r["trip"]["summary"]["time"],
-                "length": total_km * 1000,
-                "max_up_slope": max(
-                    out_r["trip"]["summary"].get("max_up_slope", 0),
-                    back_r["trip"]["summary"].get("max_up_slope", 0),
-                ),
-            }
-
-            base_score = score_route(
-                label, weather, night,
-                {"length": combined_summary["length"],
-                 "time": combined_summary["time"],
-                 "max_up_slope": combined_summary["max_up_slope"]}
+        # Compute total length
+        summary = {
+            "length": sum(
+                seg["trip"]["summary"]["length"]
+                for seg in [valhalla_route(center, midpoints[0], "pedestrian", options)]
             )
+        }
 
-            penalty = abs(total_km - target_km)
-            final_score = base_score - penalty
+        # Predict final loop distance
+        loop_dist_km = 0
+        for i in range(len(all_coords) - 1):
+            lat1, lon1 = all_coords[i]
+            lat2, lon2 = all_coords[i + 1]
+            loop_dist_km += haversine(lat1, lon1, lat2, lon2)
 
-            loops.append({
-                "label": label,
-                "angle": angle,
-                "score": final_score,
-                "coordinates": loop_coords,
-                "waypoints": simplify_waypoints(loop_coords),
-                "summary": combined_summary,
-            })
+        summary["length"] = loop_dist_km * 1000
 
-    if not loops:
-        return {"error": "AI could not build any loop"}
+        # Score using your AI scoring
+        score = score_route(label, weather, night, summary)
+        penalty = abs(loop_dist_km - target_km)
+        final_score = score - penalty
 
-    best = max(loops, key=lambda x: x["score"])
+        candidates.append({
+            "label": label,
+            "score": final_score,
+            "coordinates": all_coords,
+            "summary": summary,
+            "target_km": target_km,
+            "night": night,
+            "weather": weather
+        })
+
+    if not candidates:
+        return {"error": "Could not generate loop"}
+
+    best = max(candidates, key=lambda x: x["score"])
 
     return {
         "mode": "loop",
         "variant": best["label"],
-        "weather": weather,
-        "night": night,
-        "score": best["score"],
-        "angle": best["angle"],
-        "target_km": target_km,
         "coordinates": best["coordinates"],
-        "waypoints": best["waypoints"],
         "summary": best["summary"],
+        "score": best["score"],
+        "target_km": best["target_km"],
+        "weather": best["weather"],
+        "night": best["night"]
     }
