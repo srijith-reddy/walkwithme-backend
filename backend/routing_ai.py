@@ -240,7 +240,6 @@ def get_ai_loop_route(center, target_km=3.0):
         angle += random.uniform(40, 70)  # spacing stays valid
 
     if len(bearings) < 5:
-        # fallback – guaranteed valid bearings
         bearings = [(i * (360 / 6)) + random.uniform(-15, 15) for i in range(6)]
 
     # =========================================================
@@ -260,25 +259,43 @@ def get_ai_loop_route(center, target_km=3.0):
         theta = math.radians(ang)
 
         d_lat = (dist_km / 111.0) * math.cos(theta)
-
         lon_scale = 111.0 * max(0.25, math.cos(math.radians(lat0)))
         d_lon = (dist_km / lon_scale) * math.sin(theta)
 
         midpoints.append((lat0 + d_lat, lon0 + d_lon))
 
     # =========================================================
-    # 3.5) SNAP midpoints to nearest valid road using OFFSET METHOD
+    # 3.5) SNAP using OFFSET + ROAD-CLASS FILTER
     # =========================================================
+    BAD_CLASSES = {
+        "motorway", "motorway_link",
+        "trunk", "trunk_link",
+        "primary", "primary_link",
+        "service", "construction",
+        "private"
+    }
+
     snapped_midpoints = []
     for mp in midpoints:
-        tiny_offset = 0.0003  # ~30 meters
+        tiny_offset = 0.0003
         mp2 = (mp[0] + tiny_offset, mp[1] + tiny_offset)
 
-        snap = valhalla_route(mp, mp2, "pedestrian")  # force real-road routing
+        snap = valhalla_route(mp, mp2, "pedestrian")
 
-        if "trip" in snap and "locations" in snap["trip"]:
-            snapped_midpoints.append(snap["trip"]["locations"][0])
-        else:
+        ok = False
+        if "trip" in snap:
+            locs = snap["trip"].get("locations", [])
+            if locs:
+                # Check road class
+                edge = locs[0].get("edges", [{}])[0]
+                road_class = edge.get("road_class")
+
+                if road_class not in BAD_CLASSES:
+                    snapped_midpoints.append(locs[0])
+                    ok = True
+
+        # fallback if snap invalid or bad class
+        if not ok:
             snapped_midpoints.append(mp)
 
     midpoints = [
@@ -297,7 +314,6 @@ def get_ai_loop_route(center, target_km=3.0):
         prev = center
         failed = False
 
-        # route through each midpoint
         for mp in midpoints:
             seg = valhalla_route(prev, mp, "pedestrian", options)
             if "trip" not in seg:
@@ -306,26 +322,21 @@ def get_ai_loop_route(center, target_km=3.0):
 
             coords = polyline.decode(seg["trip"]["legs"][0]["shape"], precision=6)
 
-            # ---------------------------------------------------------
-            # SANITY CHECK: Reject if segment too large
-            # ---------------------------------------------------------
             if len(coords) < 2:
                 failed = True
                 break
 
-            # compute rough segment length
             seg_len = 0
             for i in range(len(coords) - 1):
                 seg_len += haversine(*coords[i], *coords[i+1])
 
-            if seg_len > 2.0:  # > 2 km segment between midpoints → invalid
+            if seg_len > 2.0:
                 failed = True
                 break
 
             all_coords.extend(coords)
             prev = mp
 
-        # final segment back to start
         if failed:
             continue
 
@@ -336,7 +347,6 @@ def get_ai_loop_route(center, target_km=3.0):
         coords_back = polyline.decode(back["trip"]["legs"][0]["shape"], precision=6)
         all_coords.extend(coords_back)
 
-        # clean coords (dedupe)
         clean = []
         seen = set()
         for lat, lon in all_coords:
@@ -350,21 +360,13 @@ def get_ai_loop_route(center, target_km=3.0):
         if len(all_coords) < 50:
             continue
 
-        # =========================================================
-        # 5) compute actual loop distance
-        # =========================================================
         loop_km = 0
         for i in range(len(all_coords) - 1):
             loop_km += haversine(*all_coords[i], *all_coords[i+1])
 
         summary = {"length": loop_km}
 
-        # =========================================================
-        # 6) AI scoring
-        # =========================================================
         ai_score = score_route(label, weather, night, summary)
-
-        # penalize for deviation from target
         final_score = ai_score - abs(loop_km - target_km)
 
         candidates.append({
