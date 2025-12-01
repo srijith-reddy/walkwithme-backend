@@ -6,6 +6,8 @@ import polyline
 from datetime import datetime
 from backend.valhalla_client import valhalla_route
 
+VALHALLA_URL = "http://165.227.188.199:8002"
+
 # ============================================================
 # HELPERS (waypoints + next turn)
 # ============================================================
