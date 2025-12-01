@@ -220,7 +220,30 @@ def get_ai_best_route(start, end):
 # AI LOOP ROUTE
 # ============================================================
 
-def get_ai_loop_route(center, target_km=3.0):
+def valhalla_locate(point):
+    """
+    Snap a single (lat, lon) point to nearest real road edge using Valhalla /locate.
+    Returns the raw JSON result from Valhalla.
+    """
+    lat, lon = point
+    body = {
+        "locations": [
+            {"lat": lat, "lon": lon}
+        ]
+    }
+
+    try:
+        res = requests.post(
+            f"{VALHALLA_URL}/locate",
+            json=body,
+            timeout=5
+        )
+        return res.json()
+    except Exception as e:
+        return {"error": f"Valhalla locate failed: {e}"}
+
+
+def get_ai_loop_route(center, target_km=5.0):
     import random
 
     if not center:
@@ -233,11 +256,11 @@ def get_ai_loop_route(center, target_km=3.0):
     # =========================================================
     bearings = []
     angle = random.uniform(0, 360)
-    max_span = random.uniform(380, 460)  # full circle + randomness
+    max_span = random.uniform(380, 460)
 
     while angle < max_span:
         bearings.append(angle % 360)
-        angle += random.uniform(40, 70)  # spacing stays valid
+        angle += random.uniform(40, 70)
 
     if len(bearings) < 5:
         bearings = [(i * (360 / 6)) + random.uniform(-15, 15) for i in range(6)]
@@ -257,51 +280,26 @@ def get_ai_loop_route(center, target_km=3.0):
     midpoints = []
     for ang, dist_km in zip(bearings, distances):
         theta = math.radians(ang)
-
         d_lat = (dist_km / 111.0) * math.cos(theta)
         lon_scale = 111.0 * max(0.25, math.cos(math.radians(lat0)))
         d_lon = (dist_km / lon_scale) * math.sin(theta)
-
         midpoints.append((lat0 + d_lat, lon0 + d_lon))
 
     # =========================================================
-    # 3.5) SNAP using OFFSET + ROAD-CLASS FILTER
+    # 3.5) SNAP midpoints to nearest valid **road** using Valhalla /locate
     # =========================================================
-    BAD_CLASSES = {
-        "motorway", "motorway_link",
-        "trunk", "trunk_link",
-        "primary", "primary_link",
-        "service", "construction",
-        "private"
-    }
-
     snapped_midpoints = []
     for mp in midpoints:
-        tiny_offset = 0.0003
-        mp2 = (mp[0] + tiny_offset, mp[1] + tiny_offset)
+        locate = valhalla_locate(mp)  # <-- NEW
 
-        snap = valhalla_route(mp, mp2, "pedestrian")
-
-        ok = False
-        if "trip" in snap:
-            locs = snap["trip"].get("locations", [])
-            if locs:
-                # Check road class
-                edge = locs[0].get("edges", [{}])[0]
-                road_class = edge.get("road_class")
-
-                if road_class not in BAD_CLASSES:
-                    snapped_midpoints.append(locs[0])
-                    ok = True
-
-        # fallback if snap invalid or bad class
-        if not ok:
+        try:
+            feat = locate["features"][0]
+            snapped = feat["geometry"]["coordinates"]
+            snapped_midpoints.append((snapped[1], snapped[0]))  # lon/lat → lat/lon
+        except Exception:
             snapped_midpoints.append(mp)
 
-    midpoints = [
-        (loc["lat"], loc["lon"]) if isinstance(loc, dict) else loc
-        for loc in snapped_midpoints
-    ]
+    midpoints = snapped_midpoints
 
     # =========================================================
     # 4) Try all AI costings
@@ -347,6 +345,7 @@ def get_ai_loop_route(center, target_km=3.0):
         coords_back = polyline.decode(back["trip"]["legs"][0]["shape"], precision=6)
         all_coords.extend(coords_back)
 
+        # dedupe
         clean = []
         seen = set()
         for lat, lon in all_coords:
@@ -394,5 +393,3 @@ def get_ai_loop_route(center, target_km=3.0):
         "weather": best["weather"],
         "night": best["night"]
     }
-
-
