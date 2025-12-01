@@ -12,12 +12,22 @@ def is_night(lat, lon):
     try:
         url = f"https://api.sunrise-sunset.org/json?lat={lat}&lng={lon}&formatted=0"
         data = requests.get(url, timeout=5).json()["results"]
-        sunrise = datetime.fromisoformat(data["sunrise"])
-        sunset  = datetime.fromisoformat(data["sunset"])
-        now = datetime.utcnow()
-        return not (sunrise <= now <= sunset)
-    except:
-        return False
+
+        sunrise = datetime.fromisoformat(data["sunrise"])   # tz-aware
+        sunset  = datetime.fromisoformat(data["sunset"])    # tz-aware
+        now = datetime.utcnow().astimezone()                # convert to local timezone
+
+        # Convert sunrise/sunset to local timezone
+        sunrise_local = sunrise.astimezone(now.tzinfo)
+        sunset_local  = sunset.astimezone(now.tzinfo)
+
+        return not (sunrise_local <= now <= sunset_local)
+
+    except Exception as e:
+        print("sunrise API failed:", e)
+        # Fallback: assume night after 7 PM local time
+        hour = datetime.now().hour
+        return hour < 6 or hour > 19
 
 
 # -------------------------------------------------------------
