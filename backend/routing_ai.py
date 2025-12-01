@@ -220,7 +220,7 @@ def get_ai_best_route(start, end):
 # AI LOOP ROUTE
 # ============================================================
 
-def get_ai_loop_route(center, target_km=5.0):
+def get_ai_loop_route(center, target_km=3.0):
     import random
 
     if not center:
