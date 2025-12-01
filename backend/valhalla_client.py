@@ -1,14 +1,14 @@
-# backend/valhalla_client.py
 
 import requests
 
-VALHALLA_URL = "http://165.227.188.199:8002"
+VALHALLA_URL = "http://165.227.188.199:8002"  # Or your Fly.io Valhalla URL
 
 def valhalla_route(start, end, costing="pedestrian", costing_options=None):
     """
-    Generic Valhalla routing request wrapper with EDGE-LEVEL data enabled.
+    Generic Valhalla routing request wrapper.
     start = (lat, lon)
     end   = (lat, lon)
+    costing = "pedestrian" | "bicycle" | "auto"
     """
 
     lat1, lon1 = start
@@ -20,25 +20,8 @@ def valhalla_route(start, end, costing="pedestrian", costing_options=None):
             {"lat": lat2, "lon": lon2}
         ],
         "costing": costing,
-
-        # ⭐ THIS IS THE MAGIC LINE ⭐
-        # This forces Valhalla to return full edge metadata
-        "directions_options": {
-            "units": "kilometers",
-            "actions": ["edges"]
-        },
-
-        # ⭐ Additional protection (hard block bad edges)
-        "filters": {
-            "exclude": {
-                "class": ["motorway", "trunk", "primary"],
-                "use": ["ferry", "rail", "construction", "pier"],
-                "surface": ["wood", "gravel", "ground", "dirt"]
-            }
-        }
     }
 
-    # propagate costing options
     if costing_options:
         body["costing_options"] = costing_options
 
@@ -52,3 +35,4 @@ def valhalla_route(start, end, costing="pedestrian", costing_options=None):
 
     except Exception as e:
         return {"error": f"Valhalla request failed: {e}"}
+
