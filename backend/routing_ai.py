@@ -267,12 +267,16 @@ def get_ai_loop_route(center, target_km=5.0):
         midpoints.append((lat0 + d_lat, lon0 + d_lon))
 
     # =========================================================
-    # 3.5) SNAP midpoints to nearest valid road via Valhalla
+    # 3.5) SNAP midpoints to nearest valid road using OFFSET METHOD
     # =========================================================
     snapped_midpoints = []
     for mp in midpoints:
-        snap = valhalla_route(mp, mp, "pedestrian")  # using locate-edge
-        if "trip" in snap:
+        tiny_offset = 0.0003  # ~30 meters
+        mp2 = (mp[0] + tiny_offset, mp[1] + tiny_offset)
+
+        snap = valhalla_route(mp, mp2, "pedestrian")  # force real-road routing
+
+        if "trip" in snap and "locations" in snap["trip"]:
             snapped_midpoints.append(snap["trip"]["locations"][0])
         else:
             snapped_midpoints.append(mp)
@@ -388,4 +392,5 @@ def get_ai_loop_route(center, target_km=5.0):
         "weather": best["weather"],
         "night": best["night"]
     }
+
 
