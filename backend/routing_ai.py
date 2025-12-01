@@ -160,11 +160,8 @@ def score_route(label, weather, night, summary):
 # ============================================================
 def get_ai_best_route(start, end):
     costings, weather, night = build_costings(start)
-
     candidates = []
-
     for label, options in costings:
-
         result = valhalla_route(start, end, "pedestrian", options)
         if "trip" not in result:
             continue
@@ -222,6 +219,7 @@ def get_ai_best_route(start, end):
 # ============================================================
 # AI LOOP ROUTE
 # ============================================================
+
 def get_ai_loop_route(center, target_km=5.0):
     import random
 
@@ -235,20 +233,20 @@ def get_ai_loop_route(center, target_km=5.0):
     # =========================================================
     bearings = []
     angle = random.uniform(0, 360)
-
     max_span = random.uniform(380, 460)  # full circle + randomness
+
     while angle < max_span:
         bearings.append(angle % 360)
-        angle += random.uniform(40, 70)
+        angle += random.uniform(40, 70)  # spacing stays valid
 
     if len(bearings) < 5:
+        # fallback – guaranteed valid bearings
         bearings = [(i * (360 / 6)) + random.uniform(-15, 15) for i in range(6)]
 
     # =========================================================
     # 2) Random distances around base radius
     # =========================================================
     base_radius = max(0.6, target_km / (2 * math.pi))
-
     distances = [
         random.uniform(0.75 * base_radius, 1.3 * base_radius)
         for _ in bearings
@@ -258,10 +256,11 @@ def get_ai_loop_route(center, target_km=5.0):
     # 3) Convert (bearing, distance) → midpoints
     # =========================================================
     midpoints = []
-
     for ang, dist_km in zip(bearings, distances):
         theta = math.radians(ang)
+
         d_lat = (dist_km / 111.0) * math.cos(theta)
+
         lon_scale = 111.0 * max(0.25, math.cos(math.radians(lat0)))
         d_lon = (dist_km / lon_scale) * math.sin(theta)
 
@@ -278,7 +277,6 @@ def get_ai_loop_route(center, target_km=5.0):
         else:
             snapped_midpoints.append(mp)
 
-    # Convert back into (lat, lon) tuples
     midpoints = [
         (loc["lat"], loc["lon"]) if isinstance(loc, dict) else loc
         for loc in snapped_midpoints
@@ -290,20 +288,12 @@ def get_ai_loop_route(center, target_km=5.0):
     costings, weather, night = build_costings(center)
     candidates = []
 
-    # Helper: coordinate validation
-    def valid(p):
-        lat, lon = p
-        return -90 <= lat <= 90 and -180 <= lon <= 180
-
     for label, options in costings:
-
         all_coords = []
         prev = center
         failed = False
 
-        # -----------------------------------------------------
         # route through each midpoint
-        # -----------------------------------------------------
         for mp in midpoints:
             seg = valhalla_route(prev, mp, "pedestrian", options)
             if "trip" not in seg:
@@ -312,9 +302,9 @@ def get_ai_loop_route(center, target_km=5.0):
 
             coords = polyline.decode(seg["trip"]["legs"][0]["shape"], precision=6)
 
-            # Force correct ordering + filter invalid points
-            coords = [(lat, lon) for (lat, lon) in coords if valid((lat, lon))]
-
+            # ---------------------------------------------------------
+            # SANITY CHECK: Reject if segment too large
+            # ---------------------------------------------------------
             if len(coords) < 2:
                 failed = True
                 break
@@ -322,40 +312,27 @@ def get_ai_loop_route(center, target_km=5.0):
             # compute rough segment length
             seg_len = 0
             for i in range(len(coords) - 1):
-                lat1, lon1 = coords[i]
-                lat2, lon2 = coords[i+1]
+                seg_len += haversine(*coords[i], *coords[i+1])
 
-                # skip invalid jumps
-                step = haversine(lat1, lon1, lat2, lon2)
-                if step > 0.5:  # >500m jump = invalid
-                    failed = True
-                    break
-
-                seg_len += step
-
-            if failed or seg_len > 2.0:  # >2 km segment = invalid
+            if seg_len > 2.0:  # > 2 km segment between midpoints → invalid
                 failed = True
                 break
 
             all_coords.extend(coords)
             prev = mp
 
+        # final segment back to start
         if failed:
             continue
 
-        # -----------------------------------------------------
-        # final segment back to center
-        # -----------------------------------------------------
         back = valhalla_route(prev, center, "pedestrian", options)
         if "trip" not in back:
             continue
 
         coords_back = polyline.decode(back["trip"]["legs"][0]["shape"], precision=6)
-        coords_back = [(lat, lon) for (lat, lon) in coords_back if valid((lat, lon))]
-
         all_coords.extend(coords_back)
 
-        # dedupe coords
+        # clean coords (dedupe)
         clean = []
         seen = set()
         for lat, lon in all_coords:
@@ -363,36 +340,27 @@ def get_ai_loop_route(center, target_km=5.0):
             if key not in seen:
                 seen.add(key)
                 clean.append((lat, lon))
+
         all_coords = clean
 
         if len(all_coords) < 50:
             continue
 
         # =========================================================
-        # 5) compute loop distance — FIXED
+        # 5) compute actual loop distance
         # =========================================================
-        loop_km = 0.0
-
+        loop_km = 0
         for i in range(len(all_coords) - 1):
-            lat1, lon1 = all_coords[i]
-            lat2, lon2 = all_coords[i+1]
-
-            if not valid((lat1, lon1)) or not valid((lat2, lon2)):
-                continue
-
-            step = haversine(lat1, lon1, lat2, lon2)
-
-            if step > 0.5:  # reject teleport jump
-                continue
-
-            loop_km += step
+            loop_km += haversine(*all_coords[i], *all_coords[i+1])
 
         summary = {"length": loop_km}
 
         # =========================================================
-        # 6) AI scoring 🔥
+        # 6) AI scoring
         # =========================================================
         ai_score = score_route(label, weather, night, summary)
+
+        # penalize for deviation from target
         final_score = ai_score - abs(loop_km - target_km)
 
         candidates.append({
@@ -420,3 +388,4 @@ def get_ai_loop_route(center, target_km=5.0):
         "weather": best["weather"],
         "night": best["night"]
     }
+
