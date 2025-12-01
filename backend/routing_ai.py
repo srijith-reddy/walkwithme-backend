@@ -6,7 +6,6 @@ import polyline
 from datetime import datetime
 from backend.valhalla_client import valhalla_route
 
-VALHALLA_URL = "http://165.227.188.199:8002"
 
 # ============================================================
 # HELPERS (waypoints + next turn)
@@ -245,7 +244,7 @@ def valhalla_locate(point):
         return {"error": f"Valhalla locate failed: {e}"}
 
 
-def get_ai_loop_route(center, target_km=5.0):
+def get_ai_loop_route(center, target_km=3.0):
     import random
 
     if not center:
@@ -254,7 +253,59 @@ def get_ai_loop_route(center, target_km=5.0):
     lat0, lon0 = center
 
     # =========================================================
-    # 1) Generate GOOD bearings (5–10 random bearings)
+    # ROAD SAFETY FILTERS
+    # =========================================================
+    BAD_CLASSES = {
+        "motorway", "motorway_link",
+        "trunk", "trunk_link",
+        "primary", "primary_link",
+        "construction",
+        "private"
+    }
+
+    BAD_USES = {
+        "ferry",
+        "rail",
+        "construction",
+        "steps",
+        "sidepath",
+        "bridleway",
+        "piers", "pier",
+        "path"     # often waterwalk/boardwalk/pier segments
+    }
+
+    BAD_SURFACES = {
+        "wood",       # boardwalk
+        "metal",
+        "gravel",
+        "ground",
+        "dirt",
+        "clay",
+        "grass",
+        "unknown"
+    }
+
+    def route_is_safe(leg):
+        """Reject routes that contain bad road classes, uses, or surfaces."""
+        if "edges" not in leg:
+            return True
+
+        for edge in leg["edges"]:
+            cls = edge.get("class", "").lower()
+            use = edge.get("use", "").lower()
+            surf = edge.get("surface", "").lower()
+
+            if cls in BAD_CLASSES:
+                return False
+            if use in BAD_USES:
+                return False
+            if surf in BAD_SURFACES:
+                return False
+
+        return True
+
+    # =========================================================
+    # 1) Generate GOOD bearings (5–10 random)
     # =========================================================
     bearings = []
     angle = random.uniform(0, 360)
@@ -265,7 +316,7 @@ def get_ai_loop_route(center, target_km=5.0):
         angle += random.uniform(40, 70)
 
     if len(bearings) < 5:
-        bearings = [(i * (360 / 6)) + random.uniform(-15, 15) for i in range(6)]
+        bearings = [(i * 60) + random.uniform(-15, 15) for i in range(6)]
 
     # =========================================================
     # 2) Random distances around base radius
@@ -277,31 +328,17 @@ def get_ai_loop_route(center, target_km=5.0):
     ]
 
     # =========================================================
-    # 3) Convert (bearing, distance) → midpoints
+    # 3) Convert (bearing, distance) → midpoints (OFFSET ONLY)
     # =========================================================
     midpoints = []
     for ang, dist_km in zip(bearings, distances):
         theta = math.radians(ang)
+
         d_lat = (dist_km / 111.0) * math.cos(theta)
         lon_scale = 111.0 * max(0.25, math.cos(math.radians(lat0)))
         d_lon = (dist_km / lon_scale) * math.sin(theta)
+
         midpoints.append((lat0 + d_lat, lon0 + d_lon))
-
-    # =========================================================
-    # 3.5) SNAP midpoints to nearest valid **road** using Valhalla /locate
-    # =========================================================
-    snapped_midpoints = []
-    for mp in midpoints:
-        locate = valhalla_locate(mp)  # <-- NEW
-
-        try:
-            feat = locate["features"][0]
-            snapped = feat["geometry"]["coordinates"]
-            snapped_midpoints.append((snapped[1], snapped[0]))  # lon/lat → lat/lon
-        except Exception:
-            snapped_midpoints.append(mp)
-
-    midpoints = snapped_midpoints
 
     # =========================================================
     # 4) Try all AI costings
@@ -309,28 +346,57 @@ def get_ai_loop_route(center, target_km=5.0):
     costings, weather, night = build_costings(center)
     candidates = []
 
+    def valid_coord(pt):
+        lat, lon = pt
+        return -90 <= lat <= 90 and -180 <= lon <= 180
+
     for label, options in costings:
+
         all_coords = []
         prev = center
         failed = False
 
+        # -----------------------------------------------------
+        # Route through each midpoint
+        # -----------------------------------------------------
         for mp in midpoints:
             seg = valhalla_route(prev, mp, "pedestrian", options)
             if "trip" not in seg:
                 failed = True
                 break
 
-            coords = polyline.decode(seg["trip"]["legs"][0]["shape"], precision=6)
+            leg = seg["trip"]["legs"][0]
+
+            # SAFETY FILTER
+            if not route_is_safe(leg):
+                failed = True
+                break
+
+            # Decode shape safely
+            coords = [
+                (lat, lon)
+                for (lat, lon) in polyline.decode(leg["shape"], precision=6)
+                if valid_coord((lat, lon))
+            ]
 
             if len(coords) < 2:
                 failed = True
                 break
 
-            seg_len = 0
+            # TELEPORT JUMP PROTECTION
+            seg_len = 0.0
             for i in range(len(coords) - 1):
-                seg_len += haversine(*coords[i], *coords[i+1])
+                lat1, lon1 = coords[i]
+                lat2, lon2 = coords[i+1]
 
-            if seg_len > 2.0:
+                step = haversine(lat1, lon1, lat2, lon2)
+                if step > 0.5:     # >500m = invalid
+                    failed = True
+                    break
+
+                seg_len += step
+
+            if failed or seg_len > 2.0:  # midpoint spacing sanity
                 failed = True
                 break
 
@@ -340,14 +406,29 @@ def get_ai_loop_route(center, target_km=5.0):
         if failed:
             continue
 
+        # -----------------------------------------------------
+        # Final segment back to start
+        # -----------------------------------------------------
         back = valhalla_route(prev, center, "pedestrian", options)
         if "trip" not in back:
             continue
 
-        coords_back = polyline.decode(back["trip"]["legs"][0]["shape"], precision=6)
+        leg_back = back["trip"]["legs"][0]
+
+        if not route_is_safe(leg_back):
+            continue
+
+        coords_back = [
+            (lat, lon)
+            for (lat, lon) in polyline.decode(leg_back["shape"], precision=6)
+            if valid_coord((lat, lon))
+        ]
+
         all_coords.extend(coords_back)
 
-        # dedupe
+        # -----------------------------------------------------
+        # DEDUPE COORDS
+        # -----------------------------------------------------
         clean = []
         seen = set()
         for lat, lon in all_coords:
@@ -361,12 +442,28 @@ def get_ai_loop_route(center, target_km=5.0):
         if len(all_coords) < 50:
             continue
 
-        loop_km = 0
+        # =========================================================
+        # 5) Compute actual loop distance
+        # =========================================================
+        loop_km = 0.0
         for i in range(len(all_coords) - 1):
-            loop_km += haversine(*all_coords[i], *all_coords[i+1])
+            lat1, lon1 = all_coords[i]
+            lat2, lon2 = all_coords[i+1]
+
+            if not valid_coord((lat1, lon1)) or not valid_coord((lat2, lon2)):
+                continue
+
+            step = haversine(lat1, lon1, lat2, lon2)
+            if step > 0.5:  # teleport
+                continue
+
+            loop_km += step
 
         summary = {"length": loop_km}
 
+        # =========================================================
+        # 6) AI SCORING
+        # =========================================================
         ai_score = score_route(label, weather, night, summary)
         final_score = ai_score - abs(loop_km - target_km)
 
