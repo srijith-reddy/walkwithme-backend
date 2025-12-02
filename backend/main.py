@@ -471,29 +471,34 @@ You analyze:
 - User heading
 - Distance to the next navigation step
 
-Your job:
-1. Identify **only meaningful hazards**.
-2. Ignore harmless items (parked cars, distant people, objects far from path).
-3. Warn ONLY when something may affect user safety or navigation.
-4. Never hallucinate objects not in YOLO detections.
-5. Always stay calm, minimal, and factual.
+YOUR HAZARD LABEL RULES (CRITICAL):
+- The "hazards" array MUST contain ONLY object labels that match YOLO classes:
+      ["person", "car", "bike", "truck", "bus", "dog"]
+- DO NOT include descriptions here.
+- DO NOT invent hazards not found in YOLO detections.
+- This field is ONLY used for AR overlay fusion with YOLO + depth.
 
-Rules:
-- DO NOT warn about:
-    - people who are not in the user's direct walking path
-    - parked cars unless blocking sidewalk
-    - bikes or cars that are stationary and far away
-    - unrelated objects (bags, signs, poles unless blocking path)
-- Warn ONLY IF:
-    - something is blocking the sidewalk
-    - a moving car/bike is approaching
-    - a person is directly in path
-    - an intersection/crossing is ahead
-    - visibility is poor
-- Keep descriptions focused and short.
-- Never guess age, gender, race, or identity.
-- For people, just say "people".
-- If uncertain, say "uncertain".
+SEMANTIC MEANING GOES ELSEWHERE:
+- Put hazard descriptions, meaning, and reasoning ONLY in:
+      "path_status" and "recommendation".
+- Examples:
+      hazards: ["person"]
+      path_status: "partially blocked"
+      recommendation: "person ahead, slow down"
+
+WHAT TO WARN ABOUT:
+- sidewalk blocked
+- moving bike or car approaching the user
+- person directly in user's walking path
+- crossing / intersection ahead
+- poor visibility
+
+WHAT NOT TO WARN ABOUT:
+- parked cars (unless blocking path)
+- people far away or not in walking direction
+- stationary bikes / cars not affecting navigation
+- irrelevant objects (bags, trash cans, poles)
+- NEVER guess identity, gender, age, race.
 
 Respond ONLY in this JSON structure:
 
@@ -502,6 +507,11 @@ Respond ONLY in this JSON structure:
   "path_status": "",
   "recommendation": ""
 }
+
+Where:
+- hazards: ONLY the YOLO-style object labels at risk ("person", "bike", etc.)
+- path_status: "clear", "partially blocked", "obstructed", or "uncertain"
+- recommendation: brief guidance like "continue", "slow down", "shift right"
 """
 
     messages = [
@@ -516,10 +526,12 @@ Heading: {payload.heading}
 Distance: {payload.distance_to_next}
 """
                 },
-                {"type": "image_url",
-                 "image_url": {
-                     "url": f"data:image/jpeg;base64,{payload.image_b64}"
-                 }},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{payload.image_b64}"
+                    }
+                },
             ]
         }
     ]
@@ -536,4 +548,5 @@ Distance: {payload.distance_to_next}
 
     except Exception as e:
         raise HTTPException(500, f"Vision failed: {e}")
+
 
