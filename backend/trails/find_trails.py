@@ -30,9 +30,8 @@ def choose_step_for_radius(radius_m):
 # -------------------------------------------------------------
 # Create grid (lat/lon box)
 # -------------------------------------------------------------
-def generate_grid(lat, lon, radius_m, step_m):
+def generate_grid(lat, lon, radius_m, step_m, max_points=250):
 
-    # convert meter steps to degrees
     deg_lat_per_m = 1 / 111_000.0
     deg_lon_per_m = 1 / (111_000.0 * math.cos(math.radians(lat)))
 
@@ -47,6 +46,16 @@ def generate_grid(lat, lon, radius_m, step_m):
     lat_points = int((lat_max - lat_min) / lat_step) + 1
     lon_points = int((lon_max - lon_min) / lon_step) + 1
 
+    total = lat_points * lon_points
+
+    # 🔥 LIMIT the grid
+    if total > max_points:
+        factor = math.sqrt(total / max_points)
+        lat_step *= factor
+        lon_step *= factor
+        lat_points = int((lat_max - lat_min) / lat_step) + 1
+        lon_points = int((lon_max - lon_min) / lon_step) + 1
+
     grid = []
     for i in range(lat_points):
         for j in range(lon_points):
@@ -54,7 +63,8 @@ def generate_grid(lat, lon, radius_m, step_m):
             glon = lon_min + j * lon_step
             grid.append((glat, glon))
 
-    return grid
+    return grid[:max_points]
+
 
 
 # -------------------------------------------------------------
