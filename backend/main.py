@@ -19,12 +19,6 @@ from backend.routing import get_route
 # GPX import
 from backend.gpx.import_gpx import import_gpx
 
-
-# Trails
-from backend.trails.find_trails import find_nearby_trails
-from backend.trails.trail_scorer import score_trails
-from backend.trails.valhalla_trails import valhalla_trail_route
-
 # Elevation analyzer
 from backend.elevation import analyze_route_elevation
 
@@ -397,33 +391,6 @@ def route(start: str, end: str = None, mode: str = "shortest", duration: int = 2
     result["elevation"] = analyze_route_elevation(result["coordinates"])
 
     return result
-
-
-# =============================================================
-# /trails (unchanged)
-# =============================================================
-@app.get("/trails")
-def trails(start: str, radius: int = 2000, limit: int = 5):
-    lat, lon = parse_location(start)
-    raw = find_nearby_trails(lat, lon, radius)
-    if not raw:
-        raise HTTPException(404, "No trails found")
-    scored = score_trails(raw)
-    return scored[:limit]
-
-
-# =============================================================
-# /trail_route (unchanged)
-# =============================================================
-@app.get("/trail_route")
-def trail_route(start: str, end: str):
-    lat1, lon1 = parse_location(start)
-    lat2, lon2 = parse_location(end)
-    result = valhalla_trail_route(lat1, lon1, lat2, lon2)
-    if "error" in result:
-        raise HTTPException(500, result["error"])
-    return result
-
 
 # =============================================================
 # /reverse_geocode (unchanged)
