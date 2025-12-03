@@ -117,9 +117,25 @@ def find_nearby_trails(lat, lon, radius=2000):
     user_pt_m = transform(proj_to_m, user_pt)
 
     WALK_USES = {
-        "footway", "path", "trail", "steps",
-        "pedestrian", "sidewalk", "track"
-    }
+    "footway",
+    "path",
+    "trail",
+    "steps",
+    "pedestrian",
+    "sidewalk",
+    "track",
+    "pedestrian_crossing",
+    "service",                 # parks, waterfront paths
+    "service_other",
+    "alley",
+    "living_street",
+    "cycleway",                # shared bike/ped paths
+    "bridleway",
+    "residential",             # some parks are tagged incorrectly
+    "unclassified",
+    "road",                    # only if pedestrian_type=foot
+}
+
 
     seen_ids = set()
 
