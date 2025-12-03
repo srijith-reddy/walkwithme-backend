@@ -73,14 +73,14 @@ def generate_grid(lat, lon, radius_m, step_m, max_points=250):
 def get_edges_from_point(lat, lon):
     payload = {
         "shape": [
-            {"lat": lat, "lon": lon, "type": "break"},
-            {"lat": lat + 0.0003, "lon": lon + 0.0003, "type": "break"}
+            {"lat": lat, "lon": lon},
+            {"lat": lat, "lon": lon + 0.002}   # longer segment → reliably intersects edges
         ],
         "costing": "pedestrian",
-
-        # IMPORTANT: works even if point isn't on a trail exactly
         "shape_match": "walk_or_snap",
-
+        "trace_options": {
+            "search_radius": 80
+        },
         "filters": {
             "attributes": [
                 "edge.use",
@@ -97,6 +97,7 @@ def get_edges_from_point(lat, lon):
         return r.json().get("edges", [])
     except:
         return []
+
 
 
 # -------------------------------------------------------------
