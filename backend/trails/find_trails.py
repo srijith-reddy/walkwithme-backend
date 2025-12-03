@@ -19,7 +19,8 @@ proj_to_m = pyproj.Transformer.from_crs(
 # 1) Call /isochrone
 # -------------------------------------------------------------
 def valhalla_isochrone(lat, lon, radius_m):
-    walking_speed_m_min = 85  # ~4.5 km/h (Valhalla pedestrian)
+    # Valhalla pedestrian ~4.5 km/h → 75 m/min (conservative)
+    walking_speed_m_min = 200
     minutes = radius_m / walking_speed_m_min
 
     payload = {
@@ -27,7 +28,7 @@ def valhalla_isochrone(lat, lon, radius_m):
         "costing": "pedestrian",
         "contours": [{"time": minutes}],
         "polygons": True,
-        "generalize": 20
+        "generalize": 10
     }
 
     try:
@@ -45,8 +46,11 @@ def valhalla_isochrone_edges(lat, lon, radius_m):
     if not iso or "features" not in iso:
         return None
 
+    # get polygon
     poly = shape(iso["features"][0]["geometry"])
-    boundary = list(poly.exterior.coords)[::3]  # sample more points
+
+    # DO NOT SKIP POINTS — or you lose edges!
+    boundary = list(poly.exterior.coords)
 
     shape_points = [{"lat": y, "lon": x} for x, y in boundary]
 
@@ -77,14 +81,14 @@ def valhalla_isochrone_edges(lat, lon, radius_m):
 
 
 # -------------------------------------------------------------
-# 3) Extract REAL trails from /trace_attributes
+# 3) Extract REAL trails from returned edges
 # -------------------------------------------------------------
 def find_nearby_trails(lat, lon, radius=2000):
     """
-    Real AllTrails-style extraction:
-      - use /isochrone to get walkable region
-      - use /trace_attributes for all edges inside polygon
-      - filter to path-like edges
+    AllTrails-style extraction:
+      - /isochrone → walkable polygon
+      - /trace_attributes → all edges
+      - filter to walkable trail-like surfaces
     """
     data = valhalla_isochrone_edges(lat, lon, radius)
     if not data or "edges" not in data:
@@ -94,12 +98,14 @@ def find_nearby_trails(lat, lon, radius=2000):
     trails = []
 
     # project user coordinate
-    user_pt = Point(lon, lat)
-    user_pt_m = transform(proj_to_m, user_pt)
+    user_pt_m = transform(proj_to_m, Point(lon, lat))
 
+    # EXPANDED WALKABLE USES (critical fix)
     WALK_USES = {
         "pedestrian", "footway", "path", "trail",
-        "track", "steps", "sidewalk"
+        "track", "steps", "sidewalk",
+        "residential", "service", "alley",
+        "living_street", "parking_aisle"
     }
 
     for edge in edges:
@@ -111,8 +117,7 @@ def find_nearby_trails(lat, lon, radius=2000):
         if not rawshape:
             continue
 
-        # handle both formats:
-        #   [{'lat':..,'lon':..}] OR [[lon,lat]]
+        # Handle dict OR [lon,lat]
         coords = []
         for p in rawshape:
             if isinstance(p, dict):
@@ -126,8 +131,11 @@ def find_nearby_trails(lat, lon, radius=2000):
         geom = LineString(coords)
         geom_m = transform(proj_to_m, geom)
 
+        # distance from user to closest point on that line
         dist = user_pt_m.distance(geom_m)
-        if dist > radius:
+
+        # Allow trails slightly beyond radius
+        if dist > radius * 1.5:
             continue
 
         props = {
