@@ -5,55 +5,51 @@ from shapely.geometry import Point, LineString, shape
 from shapely.ops import transform
 import pyproj
 
-# Your Valhalla URL
 VALHALLA_URL = "http://165.227.188.199:8002"
 
-
-# ============================================================
-# Helpers
-# ============================================================
-
+# -------------------------------------------------------------
+# Projection helper (lat/lon → meters)
+# -------------------------------------------------------------
 proj_to_m = pyproj.Transformer.from_crs(
     "EPSG:4326", "EPSG:3857", always_xy=True
 ).transform
 
 
+# -------------------------------------------------------------
+# 1) Call /isochrone
+# -------------------------------------------------------------
 def valhalla_isochrone(lat, lon, radius_m):
-    """
-    Calls /isochrone to get a polygon of all walkable edges.
-    """
+    walking_speed_m_min = 250  # ~4.5 km/h (Valhalla pedestrian)
+    minutes = radius_m / walking_speed_m_min
+
     payload = {
         "locations": [{"lat": lat, "lon": lon}],
         "costing": "pedestrian",
-        "contours": [{"time": radius_m / 80}],  # ~80m/min
+        "contours": [{"time": minutes}],
         "polygons": True,
         "generalize": 20
     }
+
     try:
-        r = requests.post(f"{VALHALLA_URL}/isochrone", json=payload, timeout=6)
+        r = requests.post(f"{VALHALLA_URL}/isochrone", json=payload, timeout=8)
         return r.json()
     except:
         return None
 
 
+# -------------------------------------------------------------
+# 2) Isochrone → polygon → boundary → /trace_attributes
+# -------------------------------------------------------------
 def valhalla_isochrone_edges(lat, lon, radius_m):
-    """
-    Uses isochrone → extract boundary → send to /trace_attributes
-    to get ALL edges inside.
-    """
     iso = valhalla_isochrone(lat, lon, radius_m)
     if not iso or "features" not in iso:
         return None
 
-    # First feature = polygon
     poly = shape(iso["features"][0]["geometry"])
+    boundary = list(poly.exterior.coords)[::3]  # sample more points
 
-    # Sample boundary points to feed into trace_attributes
-    boundary = list(poly.exterior.coords)
+    shape_points = [{"lat": y, "lon": x} for x, y in boundary]
 
-    shape_points = [
-        {"lat": c[1], "lon": c[0]} for c in boundary[::10]
-    ]
     if len(shape_points) < 2:
         return None
 
@@ -62,71 +58,90 @@ def valhalla_isochrone_edges(lat, lon, radius_m):
         "costing": "pedestrian",
         "shape_match": "map_snap",
         "filters": {
-            "attributes": ["edge.use", "edge.surface", "shape", "names"]
+            "attributes": [
+                "edge.id",
+                "edge.use",
+                "edge.surface",
+                "edge.length",
+                "names",
+                "shape"
+            ]
         }
     }
 
     try:
-        r = requests.post(f"{VALHALLA_URL}/trace_attributes", json=payload, timeout=8)
+        r = requests.post(f"{VALHALLA_URL}/trace_attributes", json=payload, timeout=12)
         return r.json()
     except:
         return None
 
 
-# ============================================================
-# Simple trail logic using TRULY nearby edges (isochrone-based)
-# ============================================================
-
+# -------------------------------------------------------------
+# 3) Extract REAL trails from /trace_attributes
+# -------------------------------------------------------------
 def find_nearby_trails(lat, lon, radius=2000):
     """
-    Finds REAL nearby trails using:
-      1. /isochrone → walkable polygon
-      2. /trace_attributes → edges inside polygon
+    Real AllTrails-style extraction:
+      - use /isochrone to get walkable region
+      - use /trace_attributes for all edges inside polygon
+      - filter to path-like edges
     """
-
     data = valhalla_isochrone_edges(lat, lon, radius)
     if not data or "edges" not in data:
         return []
 
     edges = data["edges"]
-
     trails = []
 
-    # Convert user point to projected meters
+    # project user coordinate
     user_pt = Point(lon, lat)
     user_pt_m = transform(proj_to_m, user_pt)
 
+    WALK_USES = {
+        "pedestrian", "footway", "path", "trail",
+        "track", "steps", "sidewalk"
+    }
+
     for edge in edges:
-
-        # Use SAME FILTER as your previous code
-        if edge.get("use") not in ["pedestrian", "footway", "path", "trail"]:
+        use = edge.get("use")
+        if use not in WALK_USES:
             continue
 
-        if "shape" not in edge:
+        rawshape = edge.get("shape", [])
+        if not rawshape:
             continue
 
-        # Convert geometry: [(lon,lat)] format
-        coords = [(pt[0], pt[1]) for pt in edge["shape"]]
+        # handle both formats:
+        #   [{'lat':..,'lon':..}] OR [[lon,lat]]
+        coords = []
+        for p in rawshape:
+            if isinstance(p, dict):
+                coords.append((p["lon"], p["lat"]))
+            else:
+                coords.append((p[0], p[1]))
+
+        if len(coords) < 2:
+            continue
+
         geom = LineString(coords)
         geom_m = transform(proj_to_m, geom)
 
-        # Distance to user
         dist = user_pt_m.distance(geom_m)
         if dist > radius:
             continue
 
+        props = {
+            "id": edge.get("id"),
+            "name": (edge.get("names") or ["Unnamed"])[0],
+            "surface": edge.get("surface", "unknown"),
+            "highway": use
+        }
+
         trails.append({
-            "properties": {
-                "id": edge.get("id"),
-                "name": (edge.get("names") or ["Unnamed"])[0],
-                "surface": edge.get("surface", "unknown"),
-                "highway": edge.get("use"),
-            },
+            "properties": props,
             "length_m": geom_m.length,
             "distance_from_user_m": dist,
             "coords": coords,
-
-            # REQUIRED for trail_scorer
             "geometry": geom
         })
 
