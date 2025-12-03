@@ -1,7 +1,7 @@
 # backend/trails/find_trails.py
 
 import requests
-from shapely.geometry import Point, LineString
+from shapely.geometry import Point, LineString, shape
 from shapely.ops import transform
 import pyproj
 
@@ -18,51 +18,77 @@ proj_to_m = pyproj.Transformer.from_crs(
 ).transform
 
 
-def valhalla_locate(lat, lon):
+def valhalla_isochrone(lat, lon, radius_m):
+    """
+    Calls /isochrone to get a polygon of all walkable edges.
+    """
     payload = {
         "locations": [{"lat": lat, "lon": lon}],
-        "verbose": True
+        "costing": "pedestrian",
+        "contours": [{"time": radius_m / 80}],  # ~80m/min
+        "polygons": True,
+        "generalize": 20
+    }
+    try:
+        r = requests.post(f"{VALHALLA_URL}/isochrone", json=payload, timeout=6)
+        return r.json()
+    except:
+        return None
+
+
+def valhalla_isochrone_edges(lat, lon, radius_m):
+    """
+    Uses isochrone → extract boundary → send to /trace_attributes
+    to get ALL edges inside.
+    """
+    iso = valhalla_isochrone(lat, lon, radius_m)
+    if not iso or "features" not in iso:
+        return None
+
+    # First feature = polygon
+    poly = shape(iso["features"][0]["geometry"])
+
+    # Sample boundary points to feed into trace_attributes
+    boundary = list(poly.exterior.coords)
+
+    shape_points = [
+        {"lat": c[1], "lon": c[0]} for c in boundary[::10]
+    ]
+    if len(shape_points) < 2:
+        return None
+
+    payload = {
+        "shape": shape_points,
+        "costing": "pedestrian",
+        "shape_match": "map_snap",
+        "filters": {
+            "attributes": ["edge.use", "edge.surface", "shape", "names"]
+        }
     }
 
     try:
-        r = requests.post(f"{VALHALLA_URL}/locate", json=payload, timeout=3)
+        r = requests.post(f"{VALHALLA_URL}/trace_attributes", json=payload, timeout=8)
         return r.json()
     except:
         return None
 
 
 # ============================================================
-# Simple trail logic using Valhalla edges
+# Simple trail logic using TRULY nearby edges (isochrone-based)
 # ============================================================
 
 def find_nearby_trails(lat, lon, radius=2000):
     """
-    Reads Valhalla /locate edges around the user and extracts
-    only pedestrian/path/footway edges.
+    Finds REAL nearby trails using:
+      1. /isochrone → walkable polygon
+      2. /trace_attributes → edges inside polygon
     """
 
-    data = valhalla_locate(lat, lon)
-    if not data:
+    data = valhalla_isochrone_edges(lat, lon, radius)
+    if not data or "edges" not in data:
         return []
 
-    # -----------------------------------------------------------
-    # Valhalla sometimes returns:
-    #   { "edges": [...] }
-    # OR
-    #   [ { "edges": [...] } ]
-    # -----------------------------------------------------------
-    if isinstance(data, list):
-        # use the first entry (we only passed one location)
-        if len(data) > 0 and isinstance(data[0], dict):
-            data = data[0]
-        else:
-            return []
-
-    # If still not a dict → invalid
-    if not isinstance(data, dict):
-        return []
-
-    edges = data.get("edges", [])
+    edges = data["edges"]
 
     trails = []
 
@@ -72,16 +98,15 @@ def find_nearby_trails(lat, lon, radius=2000):
 
     for edge in edges:
 
-        # Filter for trail-type uses
-        if edge.get("use") not in ["pedestrian", "footway", "path"]:
+        # Use SAME FILTER as your previous code
+        if edge.get("use") not in ["pedestrian", "footway", "path", "trail"]:
             continue
 
         if "shape" not in edge:
             continue
 
-        # Lat/lon are in order [lon, lat] from Valhalla
-        coords = [(c[0], c[1]) for c in edge["shape"]]
-
+        # Convert geometry: [(lon,lat)] format
+        coords = [(pt[0], pt[1]) for pt in edge["shape"]]
         geom = LineString(coords)
         geom_m = transform(proj_to_m, geom)
 
@@ -93,7 +118,7 @@ def find_nearby_trails(lat, lon, radius=2000):
         trails.append({
             "properties": {
                 "id": edge.get("id"),
-                "name": edge.get("names", ["Unnamed"])[0],
+                "name": (edge.get("names") or ["Unnamed"])[0],
                 "surface": edge.get("surface", "unknown"),
                 "highway": edge.get("use"),
             },
