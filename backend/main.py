@@ -452,8 +452,10 @@ def export_gpx(start: str, end: str, mode: str = "shortest"):
 # =============================================================
 # /vision (unchanged)
 # =============================================================
+# =============================================================
+# /vision — NO IMAGE VERSION (YOLO ONLY)
+# =============================================================
 class VisionRequest(BaseModel):
-    image_b64: str
     detections: list
     heading: float | None = None
     distance_to_next: float | None = None
@@ -466,41 +468,42 @@ async def vision(payload: VisionRequest):
 You are WALKR AR Vision — a real-time safety assistant for walking navigation.
 
 You analyze:
-- YOLO detections
-- Camera frame
+- YOLO detections (object + bbox + confidences)
 - User heading
-- Distance to the next navigation step
+- Distance to next navigation step
 
-YOUR HAZARD LABEL RULES (CRITICAL):
-- The "hazards" array MUST contain ONLY object labels that match YOLO classes:
+CRITICAL HAZARD LABEL RULES:
+- The "hazards" array MUST contain ONLY raw object labels:
       ["person", "car", "bike", "truck", "bus", "dog"]
-- DO NOT include descriptions here.
-- DO NOT invent hazards not found in YOLO detections.
-- This field is ONLY used for AR overlay fusion with YOLO + depth.
+- DO NOT include descriptions in "hazards".
+- DO NOT invent hazards not present in YOLO.
+- "hazards" is used ONLY for AR overlay fusion.
 
-SEMANTIC MEANING GOES ELSEWHERE:
-- Put hazard descriptions, meaning, and reasoning ONLY in:
-      "path_status" and "recommendation".
-- Examples:
-      hazards: ["person"]
-      path_status: "partially blocked"
-      recommendation: "person ahead, slow down"
+SEMANTICS GO INTO:
+- "path_status"
+- "recommendation"
 
-WHAT TO WARN ABOUT:
+Examples:
+    hazards: ["person"]
+    path_status: "partially blocked"
+    recommendation: "person ahead, slow down"
+
+WARN ONLY IF:
 - sidewalk blocked
-- moving bike or car approaching the user
-- person directly in user's walking path
-- crossing / intersection ahead
-- poor visibility
+- a moving bike or car is approaching
+- a person is directly in walking path
+- intersection or crossing ahead
+- visibility or path clarity is poor
 
-WHAT NOT TO WARN ABOUT:
-- parked cars (unless blocking path)
-- people far away or not in walking direction
-- stationary bikes / cars not affecting navigation
-- irrelevant objects (bags, trash cans, poles)
-- NEVER guess identity, gender, age, race.
+DO NOT WARN ABOUT:
+- parked cars (unless blocking)
+- people far away / not in path
+- stationary vehicles not affecting user
+- irrelevant objects like poles, signs, bags
 
-Respond ONLY in this JSON structure:
+NEVER infer gender, age, race, identity.
+
+Respond ONLY in this JSON:
 
 {
   "hazards": [],
@@ -509,38 +512,28 @@ Respond ONLY in this JSON structure:
 }
 
 Where:
-- hazards: ONLY the YOLO-style object labels at risk ("person", "bike", etc.)
+- hazards: ONLY the YOLO-style object labels at risk ("person", "car", etc.)
 - path_status: "clear", "partially blocked", "obstructed", or "uncertain"
-- recommendation: brief guidance like "continue", "slow down", "shift right"
+- recommendation: short guidance ("continue", "slow down", "shift right")
 """
 
     messages = [
         {"role": "system", "content": system_prompt},
         {
             "role": "user",
-            "content": [
-                {"type": "text",
-                 "text": f"""
+            "content": f"""
 YOLO detections: {payload.detections}
 Heading: {payload.heading}
 Distance: {payload.distance_to_next}
 """
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{payload.image_b64}"
-                    }
-                },
-            ]
         }
     ]
 
     try:
         resp = openai.ChatCompletion.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=messages,
-            max_tokens=300,
+            max_tokens=200,
             temperature=0.1,
         )
         text = resp.choices[0].message["content"]
@@ -548,5 +541,3 @@ Distance: {payload.distance_to_next}
 
     except Exception as e:
         raise HTTPException(500, f"Vision failed: {e}")
-
-
