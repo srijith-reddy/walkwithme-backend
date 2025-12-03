@@ -1,14 +1,13 @@
-# backend/trails/find_trails.py
-
 import requests
-from shapely.geometry import Point, LineString, shape
+from shapely.geometry import Point, LineString
 from shapely.ops import transform
 import pyproj
+import math
 
 VALHALLA_URL = "http://165.227.188.199:8002"
 
 # -------------------------------------------------------------
-# Projection helper (lat/lon → meters)
+# Project lat/lon → meters (for distances & lengths)
 # -------------------------------------------------------------
 proj_to_m = pyproj.Transformer.from_crs(
     "EPSG:4326", "EPSG:3857", always_xy=True
@@ -16,57 +15,64 @@ proj_to_m = pyproj.Transformer.from_crs(
 
 
 # -------------------------------------------------------------
-# 1) Call /isochrone
+# Adaptive grid spacing for large radii
 # -------------------------------------------------------------
-def valhalla_isochrone(lat, lon, radius_m):
-    walking_speed_m_min = 250  # realistic pedestrian speed
-    minutes = radius_m / walking_speed_m_min
+def choose_step_for_radius(radius_m):
+    if radius_m <= 5000:
+        return 500        # 0.5 km
+    if radius_m <= 20000:
+        return 1500       # 1.5 km
+    if radius_m <= 50000:
+        return 3000       # 3 km
+    return 5000           # 5 km for 100 km scans
 
+
+# -------------------------------------------------------------
+# Create grid (lat/lon box)
+# -------------------------------------------------------------
+def generate_grid(lat, lon, radius_m, step_m):
+
+    # convert meter steps to degrees
+    deg_lat_per_m = 1 / 111_000.0
+    deg_lon_per_m = 1 / (111_000.0 * math.cos(math.radians(lat)))
+
+    lat_step = step_m * deg_lat_per_m
+    lon_step = step_m * deg_lon_per_m
+
+    lat_min = lat - radius_m * deg_lat_per_m
+    lat_max = lat + radius_m * deg_lat_per_m
+    lon_min = lon - radius_m * deg_lon_per_m
+    lon_max = lon + radius_m * deg_lon_per_m
+
+    lat_points = int((lat_max - lat_min) / lat_step) + 1
+    lon_points = int((lon_max - lon_min) / lon_step) + 1
+
+    grid = []
+    for i in range(lat_points):
+        for j in range(lon_points):
+            glat = lat_min + i * lat_step
+            glon = lon_min + j * lon_step
+            grid.append((glat, glon))
+
+    return grid
+
+
+# -------------------------------------------------------------
+# One-line trace per grid point
+# -------------------------------------------------------------
+def get_edges_from_point(lat, lon):
     payload = {
-        "locations": [{"lat": lat, "lon": lon}],
-        "costing": "pedestrian",
-        "contours": [{"time": minutes}],
-        "polygons": True,
-        "generalize": 20
-    }
-
-    try:
-        r = requests.post(f"{VALHALLA_URL}/isochrone", json=payload, timeout=8)
-        return r.json()
-    except:
-        return None
-
-
-# -------------------------------------------------------------
-# 2) Isochrone → polygon boundary → /trace_attributes
-# -------------------------------------------------------------
-def valhalla_isochrone_edges(lat, lon, radius_m):
-    iso = valhalla_isochrone(lat, lon, radius_m)
-    if not iso or "features" not in iso:
-        return None
-
-    poly = shape(iso["features"][0]["geometry"])
-    boundary = list(poly.exterior.coords)
-
-    # CRITICAL FIX: sample fewer points
-    boundary = boundary[::25]
-
-    # Build shape for trace attributes
-    shape_points = [{"lat": y, "lon": x, "type": "break"} for x, y in boundary]
-
-    if len(shape_points) < 2:
-        return None
-
-    payload = {
-        "shape": shape_points,
+        "shape": [
+            {"lat": lat, "lon": lon, "type": "break"},
+            {"lat": lat + 0.0003, "lon": lon + 0.0003, "type": "break"}
+        ],
         "costing": "pedestrian",
 
-        # CRITICAL FIX: use walk_or_snap (works for polygons)
+        # IMPORTANT: works even if point isn't on a trail exactly
         "shape_match": "walk_or_snap",
 
         "filters": {
             "attributes": [
-                "edge.id",
                 "edge.use",
                 "edge.surface",
                 "edge.length",
@@ -77,71 +83,89 @@ def valhalla_isochrone_edges(lat, lon, radius_m):
     }
 
     try:
-        r = requests.post(f"{VALHALLA_URL}/trace_attributes", json=payload, timeout=12)
-        return r.json()
+        r = requests.post(f"{VALHALLA_URL}/trace_attributes", json=payload, timeout=6)
+        return r.json().get("edges", [])
     except:
-        return None
-
-
-# -------------------------------------------------------------
-# 3) Extract REAL nearby trails
-# -------------------------------------------------------------
-def find_nearby_trails(lat, lon, radius=160000):
-    data = valhalla_isochrone_edges(lat, lon, radius)
-    if not data or "edges" not in data:
         return []
 
-    edges = data["edges"]
+
+# -------------------------------------------------------------
+# MAIN TRAIL FINDER (AllTrails-like)
+# -------------------------------------------------------------
+def find_nearby_trails(lat, lon, radius=2000):
+
+    radius_m = radius
+    step_m = choose_step_for_radius(radius_m)
+
+    # 1) Grid
+    grid = generate_grid(lat, lon, radius_m, step_m)
+
     trails = []
 
+    # Convert user point
     user_pt = Point(lon, lat)
     user_pt_m = transform(proj_to_m, user_pt)
 
     WALK_USES = {
-        "pedestrian", "footway", "path", "trail",
-        "track", "steps", "sidewalk"
+        "footway", "path", "trail", "steps",
+        "pedestrian", "sidewalk", "track"
     }
 
-    for edge in edges:
-        use = edge.get("use")
-        if use not in WALK_USES:
+    seen_ids = set()
+
+    # 2) For each grid point → do small trace_attributes
+    for (glat, glon) in grid:
+        edges = get_edges_from_point(glat, glon)
+        if not edges:
             continue
 
-        rawshape = edge.get("shape", [])
-        if not rawshape:
-            continue
+        for edge in edges:
+            use = edge.get("use")
+            if use not in WALK_USES:
+                continue
 
-        # handle dict or [lon,lat]
-        coords = []
-        for p in rawshape:
-            if isinstance(p, dict):
-                coords.append((p["lon"], p["lat"]))
-            else:
-                coords.append((p[0], p[1]))
+            # Deduplicate by ID
+            eid = edge.get("id")
+            if eid in seen_ids:
+                continue
+            seen_ids.add(eid)
 
-        if len(coords) < 2:
-            continue
+            rawshape = edge.get("shape", [])
+            if not rawshape:
+                continue
 
-        geom = LineString(coords)
-        geom_m = transform(proj_to_m, geom)
+            # convert shape to coords
+            coords = []
+            for p in rawshape:
+                if isinstance(p, dict):
+                    coords.append((p["lon"], p["lat"]))
+                else:
+                    coords.append((p[0], p[1]))
 
-        dist = user_pt_m.distance(geom_m)
-        if dist > radius:
-            continue
+            if len(coords) < 2:
+                continue
 
-        props = {
-            "id": edge.get("id"),
-            "name": (edge.get("names") or ["Unnamed"])[0],
-            "surface": edge.get("surface", "unknown"),
-            "highway": use
-        }
+            geom = LineString(coords)
+            geom_m = transform(proj_to_m, geom)
 
-        trails.append({
-            "properties": props,
-            "length_m": geom_m.length,
-            "distance_from_user_m": dist,
-            "coords": coords,
-            "geometry": geom
-        })
+            # distance to user
+            dist = user_pt_m.distance(geom_m)
+            if dist > radius_m:
+                continue
+
+            props = {
+                "id": eid,
+                "name": (edge.get("names") or ["Unnamed"])[0],
+                "surface": edge.get("surface", "unknown"),
+                "highway": use
+            }
+
+            trails.append({
+                "properties": props,
+                "length_m": geom_m.length,
+                "distance_from_user_m": dist,
+                "coords": coords,
+                "geometry": geom
+            })
 
     return trails
