@@ -6,7 +6,7 @@ from shapely.ops import transform
 import pyproj
 
 # Your Valhalla URL
-VALHALLA_URL = "http://165.227.188.199:8002"  # change to your Fly.io endpoint
+VALHALLA_URL = "http://165.227.188.199:8002"
 
 
 # ============================================================
@@ -19,10 +19,6 @@ proj_to_m = pyproj.Transformer.from_crs(
 
 
 def valhalla_locate(lat, lon):
-    """
-    Calls Valhalla's /locate API to get nearby edges.
-    This is the replacement for your manual PBF parsing.
-    """
     payload = {
         "locations": [{"lat": lat, "lon": lon}],
         "verbose": True
@@ -41,35 +37,55 @@ def valhalla_locate(lat, lon):
 
 def find_nearby_trails(lat, lon, radius=2000):
     """
-    No files. No osmium. Uses Valhalla's own edge metadata.
-
-    Strategy:
-      1. Use /locate to find edges around user location.
-      2. Filter edges where "use" = "pedestrian" or "path".
-      3. Return them as "trails".
+    Reads Valhalla /locate edges around the user and extracts
+    only pedestrian/path/footway edges.
     """
 
     data = valhalla_locate(lat, lon)
     if not data:
         return []
 
+    # -----------------------------------------------------------
+    # Valhalla sometimes returns:
+    #   { "edges": [...] }
+    # OR
+    #   [ { "edges": [...] } ]
+    # -----------------------------------------------------------
+    if isinstance(data, list):
+        # use the first entry (we only passed one location)
+        if len(data) > 0 and isinstance(data[0], dict):
+            data = data[0]
+        else:
+            return []
+
+    # If still not a dict → invalid
+    if not isinstance(data, dict):
+        return []
+
+    edges = data.get("edges", [])
+
     trails = []
 
+    # Convert user point to projected meters
     user_pt = Point(lon, lat)
     user_pt_m = transform(proj_to_m, user_pt)
 
-    for edge in data.get("edges", []):
+    for edge in edges:
+
+        # Filter for trail-type uses
         if edge.get("use") not in ["pedestrian", "footway", "path"]:
             continue
 
         if "shape" not in edge:
             continue
 
+        # Lat/lon are in order [lon, lat] from Valhalla
         coords = [(c[0], c[1]) for c in edge["shape"]]
+
         geom = LineString(coords)
         geom_m = transform(proj_to_m, geom)
 
-        # Compute distance
+        # Distance to user
         dist = user_pt_m.distance(geom_m)
         if dist > radius:
             continue
@@ -83,7 +99,10 @@ def find_nearby_trails(lat, lon, radius=2000):
             },
             "length_m": geom_m.length,
             "distance_from_user_m": dist,
-            "coords": coords
+            "coords": coords,
+
+            # REQUIRED for trail_scorer
+            "geometry": geom
         })
 
     return trails
