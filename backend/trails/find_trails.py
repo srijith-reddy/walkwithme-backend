@@ -19,7 +19,7 @@ proj_to_m = pyproj.Transformer.from_crs(
 # 1) Call /isochrone
 # -------------------------------------------------------------
 def valhalla_isochrone(lat, lon, radius_m):
-    walking_speed_m_min = 250  # ~4.5 km/h (Valhalla pedestrian)
+    walking_speed_m_min = 85  # ~4.5 km/h (Valhalla pedestrian)
     minutes = radius_m / walking_speed_m_min
 
     payload = {
