@@ -1,4 +1,3 @@
-fastapi
 uvicorn
 osmnx
 networkx
@@ -13,3 +12,4 @@ rtree
 fiona
 shapely
 polyline
+python-multipart
