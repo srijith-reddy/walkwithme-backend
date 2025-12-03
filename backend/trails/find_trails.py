@@ -83,7 +83,7 @@ def valhalla_isochrone_edges(lat, lon, radius_m):
 # -------------------------------------------------------------
 # 3) Extract REAL trails from returned edges
 # -------------------------------------------------------------
-def find_nearby_trails(lat, lon, radius=2000):
+def find_nearby_trails(lat, lon, radius=12000):
     """
     AllTrails-style extraction:
       - /isochrone → walkable polygon
