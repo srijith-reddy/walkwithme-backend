@@ -153,25 +153,65 @@ def score_safety(props):
 def score_trails(trails):
     """
     trails = output of find_nearby_trails()
+    Returns iOS-ready, AllTrails-style trail records.
     """
 
+    import hashlib
     results = []
 
     for t in trails:
-        geom = t["geometry"]
-        props = t["properties"]
-        length_m = float(t["length_m"])
+        geom = t["geometry"]                     # Shapely LineString
+        props = t["properties"]                  # name, surface, highway/use
+        length_m = float(t["length_m"])          # trail length
 
+        # ============================================================
+        # Elevation Gain
+        # ============================================================
         elev_gain = compute_elevation_gain(geom)
 
+        # ============================================================
+        # Difficulty / Scenic / Safety
+        # ============================================================
         difficulty_level, difficulty_score = score_difficulty(length_m, elev_gain)
-
         scenic_score = score_scenic(props)
         safety_score = score_safety(props)
 
-        # Build record
+        # ============================================================
+        # Geometry coords corrected to [lat, lon]
+        # ============================================================
+        coords_latlon = [(lat, lon) for lon, lat in geom.coords]
+
+        # ============================================================
+        # Stable ID based on geometry
+        # ============================================================
+        geom_hash = hashlib.sha1(str(coords_latlon).encode()).hexdigest()[:12]
+        trail_id = f"trail_{geom_hash}"
+
+        # ============================================================
+        # Center point of trail (for map preview)
+        # ============================================================
+        centroid = geom.centroid
+        center_lat = centroid.y
+        center_lon = centroid.x
+
+        # ============================================================
+        # Estimated time (minutes) using avg walking speed 1.3 m/s
+        # ============================================================
+        walking_speed_m_s = 1.3
+        est_time_min = round((length_m / walking_speed_m_s) / 60)
+
+        # ============================================================
+        # Build final iOS-ready record
+        # ============================================================
         results.append({
+            "id": trail_id,
             "name": props.get("name", "Unnamed Trail"),
+
+            # Map preview anchor
+            "center_lat": center_lat,
+            "center_lon": center_lon,
+
+            # Metrics
             "length_m": round(length_m, 2),
             "distance_from_user_m": t.get("distance_from_user_m"),
             "elevation_gain_m": elev_gain,
@@ -179,14 +219,24 @@ def score_trails(trails):
             "difficulty_score": difficulty_score,
             "scenic_score": scenic_score,
             "safety_score": safety_score,
-            # FIXED: store coords correctly
-            "geometry_coords": [(lat, lon) for lon, lat in geom.coords]
+            "est_time_min": est_time_min,
+
+            # Geometry (for map overlay + AR)
+            "preview_coords": coords_latlon,
+            "geometry_coords": coords_latlon,
+
+            # Metadata useful for filters
+            "use": props.get("highway", ""),
+            "surface": props.get("surface", "unknown"),
+
+            # Optional future tags (can be empty for now)
+            "tags": []
         })
 
-    # Sort by:
-    # 1. easy → hard
-    # 2. scenic high → low
-    # 3. safety high → low
-    results.sort(key=lambda tr: (tr["difficulty_score"], -tr["scenic_score"], -tr["safety_score"]))
+    # Sort by difficulty → scenic → safety
+    results.sort(
+        key=lambda tr: (tr["difficulty_score"], -tr["scenic_score"], -tr["safety_score"])
+    )
 
     return results
+
