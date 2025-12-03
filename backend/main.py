@@ -1,6 +1,6 @@
 # backend/main.py
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
@@ -16,8 +16,9 @@ import polyline
 # ---------------------------
 from backend.routing import get_route
 
-# GPX export
-from backend.gpx.export_gpx import gpx_response
+# GPX import
+from backend.gpx.import_gpx import import_gpx
+
 
 # Trails
 from backend.trails.find_trails import find_nearby_trails
@@ -437,21 +438,29 @@ def reverse_geocode_endpoint(coords: str):
 
 
 # =============================================================
-# /export_gpx (unchanged)
+# /import_gpx — upload GPX → coords + elevation
 # =============================================================
-@app.get("/export_gpx")
-def export_gpx(start: str, end: str, mode: str = "shortest"):
-    lat1, lon1 = parse_location(start)
-    lat2, lon2 = parse_location(end)
-    result = get_route((lat1, lon1), (lat2, lon2), mode)
-    if "error" in result:
-        raise HTTPException(404, result["error"])
-    return gpx_response(result["coordinates"])
+@app.post("/import_gpx")
+async def import_gpx_endpoint(file: UploadFile = File(...)):
+    """
+    Upload a GPX file and get back:
+    - decoded coordinates [(lat, lon)]
+    - basic elevation analysis (same shape as /route["elevation"])
+    """
 
+    coords = await import_gpx(file)
 
-# =============================================================
-# /vision (unchanged)
-# =============================================================
+    if not coords:
+        raise HTTPException(400, "No coordinates found in GPX file.")
+
+    elevation = analyze_route_elevation(coords)
+
+    return {
+        "points": len(coords),
+        "coordinates": coords,
+        "elevation": elevation
+    }
+
 # =============================================================
 # /vision — NO IMAGE VERSION (YOLO ONLY)
 # =============================================================
