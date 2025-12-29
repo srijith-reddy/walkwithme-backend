@@ -208,15 +208,18 @@ Interpret vision-based hazard signals for AR navigation
 
 ---
 
-Deployment
+Deployment Architecture
 
-The backend is containerized using Docker:
+The WalkWithMe backend is a containerized FastAPI service designed to be deployment-agnostic.
 
-- Python 3.11 slim base image
-- GEOS and spatial dependencies installed
-- FastAPI served via Uvicorn on port 8080
+Pedestrian routing is powered by a dedicated Valhalla instance running on a DigitalOcean droplet. Valhalla uses prebuilt, region-specific map tiles that are generated offline and persisted on disk. These tiles are not built dynamically at request time.
 
-Valhalla is expected to run as a separate service and is accessed via HTTP.
+The backend communicates with Valhalla over HTTP and can be deployed independently of the routing engine.
+
+This separation allows:
+- Valhalla to remain stateful and tile-backed
+- The backend API to remain stateless
+- Flexible deployment of the backend across environments
 
 ---
 
