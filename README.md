@@ -38,11 +38,6 @@ Routing layer
   - best (AI-ranked)
   - loop (round-trip routes)
 
-Trail system
-- Isochrone-based trail discovery using Valhalla
-- Edge extraction via trace_attributes
-- Trail scoring based on length, elevation, surface, safety, and scenery
-
 Elevation system
 - Multi-source elevation fetching
 - Caching and batching
