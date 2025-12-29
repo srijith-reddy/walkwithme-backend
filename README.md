@@ -1,6 +1,6 @@
 # WalkWithMe Backend — Pedestrian Routing, Trails, Elevation, and AI Scoring
 
-This repository contains the backend API for WalkWithMe, a pedestrian-first navigation system designed to support AR walking, safety-aware routing, scenic and exploratory paths, trail discovery, elevation analysis, and GPX export.
+This repository contains the backend API for WalkWithMe, a pedestrian-first navigation system designed to support AR walking, safety-aware routing, scenic and exploratory paths, elevation analysis, and GPX export.
 
 The backend is built around Valhalla as the core routing engine and extends it with custom logic for pedestrian-specific costing, trail extraction, elevation analytics, geocoding, and AI-style route ranking. It is intentionally frontend-agnostic and serves both AR navigation clients and traditional map-based interfaces.
 
