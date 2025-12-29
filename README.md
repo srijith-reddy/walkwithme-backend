@@ -72,25 +72,25 @@ The routing dispatcher (backend/routing.py) acts as a single entry point and del
 
 Routing Modes
 
-shortest  
+SHORTEST  
 Uses Valhalla pedestrian routing with minimal customization. Intended for efficiency and baseline comparisons.
 
-safe  
+SAFE  
 Adjusts pedestrian costing based on time of day. During night hours, it strongly prioritizes lit roads, avoids alleys, and increases safety weighting. Designed for real-world walking safety rather than shortest distance.
 
-scenic  
+SCENIC  
 Biases routes toward greenery, parks, waterfronts, and low-density streets. Uses Valhalla edge metadata to compute green, water, and scenic scores, then selects the most scenic candidate.
 
-explore  
+EXPLORE  
 Encourages lively, walkable streets and interesting areas. Costing is dynamically adjusted based on weather and time of day to avoid unpleasant or unsafe conditions.
 
-elevation  
+ELEVATION 
 Minimizes elevation gain and steep slopes. In addition to routing, it performs full elevation analysis and returns gain, loss, slope profile, and walking-specific difficulty classification.
 
-best  
+BEST  
 Generates multiple candidate routes using different pedestrian costing presets. Each candidate is scored using weather, time of day, slope, distance, and safety heuristics. The highest-scoring route is returned.
 
-loop  
+LOOP  
 Generates round-trip walking routes optimized for a target distance. Uses directional sampling and candidate scoring to produce a loop suitable for exercise or casual walks.
 
 ---
@@ -105,25 +105,6 @@ For all routing modes, the backend provides:
 - Next-turn metadata for HUD display
 
 Waypoint simplification is intentionally aggressive to reduce AR anchor density and improve runtime stability on mobile devices.
-
----
-
-Trail Discovery System
-
-Trail discovery is implemented without third-party trail datasets.
-
-Process:
-
-1. Generate a pedestrian isochrone around the user using Valhalla
-2. Convert the isochrone polygon into a boundary shape
-3. Use Valhalla trace_attributes to extract all walkable edges within the region
-4. Filter edges to pedestrian-relevant uses (footways, trails, sidewalks, tracks)
-5. Construct trail geometries from edge shapes
-6. Compute distance from user, length, and elevation gain
-7. Score each trail for difficulty, scenic value, and safety
-8. Return mobile-ready trail objects with geometry and metadata
-
-This approach works globally and adapts automatically to local map data quality.
 
 ---
 
