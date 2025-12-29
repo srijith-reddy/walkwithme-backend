@@ -1,82 +1,217 @@
 # WalkWithMe Backend — Pedestrian Routing, Trails, Elevation, and AI Scoring
 
-This repository contains the backend API for WalkWithMe, a pedestrian-first navigation system designed to support AR walking, scenic routing, safety-aware paths, trail discovery, elevation analysis, and GPX export.
+This repository contains the backend API for WalkWithMe, a pedestrian-first navigation system designed to support AR walking, safety-aware routing, scenic and exploratory paths, trail discovery, elevation analysis, and GPX export.
 
-The backend is built around Valhalla as the core routing engine, augmented with geocoding, elevation services, trail extraction, and AI-style scoring layers. It is designed to be frontend-agnostic and serves both AR navigation and traditional map-based navigation clients.
+The backend is built around Valhalla as the core routing engine and extends it with custom logic for pedestrian-specific costing, trail extraction, elevation analytics, geocoding, and AI-style route ranking. It is intentionally frontend-agnostic and serves both AR navigation clients and traditional map-based interfaces.
 
----
-
-High-Level Responsibilities
-
-- Pedestrian routing using Valhalla
-- Multiple routing modes (shortest, safe, scenic, explore, elevation, best, loop)
-- Trail discovery within walking radius
-- Elevation profiling and difficulty estimation
-- GPX export for offline or external navigation tools
-- Address search, autocomplete, and reverse geocoding
-- AI-assisted route ranking and hazard interpretation
-- JSON-first API designed for mobile clients
+The system is designed to work globally, without reliance on proprietary map SDKs or region-specific datasets.
 
 ---
 
-Core Architecture
+System Responsibilities
 
-FastAPI application
-- Entry point: backend/main.py
-- Stateless HTTP API
-- CORS enabled for mobile and web clients
+The backend is responsible for:
 
-Routing layer
-- Central dispatcher: backend/routing.py
-- Valhalla client wrapper: backend/valhalla_client.py
-- Mode-specific routing implementations:
-  - shortest
-  - safe (day/night aware)
-  - scenic
-  - explore
-  - elevation
-  - best (AI-ranked)
-  - loop (round-trip routes)
+- Computing pedestrian routes optimized for different intents
+- Ranking routes based on safety, scenery, elevation, and context
+- Discovering real walkable trails near a user
+- Performing elevation analysis and difficulty estimation
+- Exporting routes as standard GPX files
+- Converting between human-readable locations and coordinates
+- Providing structured, mobile-friendly JSON responses
+- Supporting AR navigation with simplified waypoints and turn metadata
+- Interpreting vision-based hazard signals for AR presentation
 
-Elevation system
-- Multi-source elevation fetching
-- Caching and batching
-- Gain, loss, slope, and difficulty classification
+---
 
-Geocoding system
-- Forward geocoding via Nominatim with Photon fallback
-- Reverse geocoding via Nominatim
-- Input parsing for coordinates or free-text locations
+High-Level Architecture
 
-AI and scoring
-- Rule-based scoring for safety, scenic value, greenery, and water proximity
-- Weather-aware and time-of-day–aware route ranking
-- LLM-powered vision interpretation endpoint (used by AR frontend)
+The backend is structured as a layered FastAPI service:
+
+Request Layer
+- FastAPI endpoints defined in backend/main.py
+- Input validation and error handling
+- Stateless request handling
+
+Routing Core
+- Unified routing dispatcher in backend/routing.py
+- Mode-specific routing logic split by intent
+- Valhalla as the underlying graph and path engine
+
+Analytics and Scoring
+- Elevation analysis
+- Scenic, safety, and greenery scoring
+- Weather and time-of-day awareness
+- AI-style candidate evaluation
+
+Supporting Systems
+- Geocoding and reverse geocoding
+- Trail extraction and scoring
+- GPX export
+- Vision interpretation endpoint
+
+---
+
+Routing Architecture
+
+Valhalla is used as the underlying pedestrian routing engine. All routing modes ultimately call Valhalla, but with different costing profiles, candidate generation strategies, and post-processing steps.
+
+Routing flow:
+
+1. Parse input locations (text or coordinates)
+2. Generate one or more candidate routes via Valhalla
+3. Decode geometry (polyline6)
+4. Extract turn-by-turn maneuvers
+5. Simplify geometry for AR usage
+6. Apply scoring or ranking logic
+7. Return structured JSON suitable for mobile clients
+
+The routing dispatcher (backend/routing.py) acts as a single entry point and delegates to mode-specific implementations.
+
+---
+
+Routing Modes
+
+shortest  
+Uses Valhalla pedestrian routing with minimal customization. Intended for efficiency and baseline comparisons.
+
+safe  
+Adjusts pedestrian costing based on time of day. During night hours, it strongly prioritizes lit roads, avoids alleys, and increases safety weighting. Designed for real-world walking safety rather than shortest distance.
+
+scenic  
+Biases routes toward greenery, parks, waterfronts, and low-density streets. Uses Valhalla edge metadata to compute green, water, and scenic scores, then selects the most scenic candidate.
+
+explore  
+Encourages lively, walkable streets and interesting areas. Costing is dynamically adjusted based on weather and time of day to avoid unpleasant or unsafe conditions.
+
+elevation  
+Minimizes elevation gain and steep slopes. In addition to routing, it performs full elevation analysis and returns gain, loss, slope profile, and walking-specific difficulty classification.
+
+best  
+Generates multiple candidate routes using different pedestrian costing presets. Each candidate is scored using weather, time of day, slope, distance, and safety heuristics. The highest-scoring route is returned.
+
+loop  
+Generates round-trip walking routes optimized for a target distance. Uses directional sampling and candidate scoring to produce a loop suitable for exercise or casual walks.
+
+---
+
+Turn-by-Turn and AR Support
+
+For all routing modes, the backend provides:
+
+- Full coordinate geometry for map rendering
+- Simplified waypoints for AR navigation
+- Turn-by-turn instructions derived from Valhalla maneuvers
+- Next-turn metadata for HUD display
+
+Waypoint simplification is intentionally aggressive to reduce AR anchor density and improve runtime stability on mobile devices.
+
+---
+
+Trail Discovery System
+
+Trail discovery is implemented without third-party trail datasets.
+
+Process:
+
+1. Generate a pedestrian isochrone around the user using Valhalla
+2. Convert the isochrone polygon into a boundary shape
+3. Use Valhalla trace_attributes to extract all walkable edges within the region
+4. Filter edges to pedestrian-relevant uses (footways, trails, sidewalks, tracks)
+5. Construct trail geometries from edge shapes
+6. Compute distance from user, length, and elevation gain
+7. Score each trail for difficulty, scenic value, and safety
+8. Return mobile-ready trail objects with geometry and metadata
+
+This approach works globally and adapts automatically to local map data quality.
+
+---
+
+Elevation Analysis
+
+Elevation analysis is performed using a multi-source fallback pipeline to ensure robustness.
+
+Elevation sources (in priority order):
+1. OpenTopoData
+2. ESRI World Elevation API
+3. USGS Elevation (USA only)
+4. Zero fallback for failure cases
+
+Features:
+- Batch fetching to respect API limits
+- In-memory caching to reduce repeated calls
+- Noise smoothing for realistic gain estimation
+- Elevation gain and loss computation
+- Slope calculation between consecutive points
+- Walking-specific difficulty classification
+
+Elevation analytics are returned inline with routing responses where applicable.
+
+---
+
+Geocoding and Location Parsing
+
+The backend accepts flexible location inputs, including:
+
+- Free-text addresses
+- Place and POI names
+- Explicit latitude,longitude strings
+
+Forward geocoding:
+- Nominatim is used as the primary source
+- Photon is used as a fast, unlimited fallback
+
+Reverse geocoding:
+- Nominatim reverse endpoint
+- Returns human-readable location labels for UI display
+
+Geocoding logic is resilient to rate limits and transient failures.
+
+---
+
+Vision Interpretation Endpoint
+
+The /vision endpoint is designed to support AR hazard awareness.
+
+Inputs:
+- Object detections (from on-device vision models)
+- User heading
+- Distance to next turn
+
+The endpoint applies conservative, rule-driven reasoning to identify only meaningful hazards and returns minimal, structured recommendations suitable for AR display. It is explicitly designed to avoid alarm fatigue and hallucinations.
+
+---
+
+GPX Export
+
+Routes can be exported as GPX 1.1 files for offline use or external navigation tools.
+
+Features:
+- Standards-compliant GPX output
+- Compatible with Apple Maps, Garmin, Komoot, AllTrails
+- Generated directly from route geometry
+- Includes route metadata and track name
 
 ---
 
 API Endpoints
 
 GET /
-Health check
+Service health check
 
 GET /autocomplete
-Address and POI autocomplete with optional geo-bias
+Address and POI autocomplete with optional geographic bias
 
 GET /route
-Compute a pedestrian route
+Compute pedestrian routes
 Parameters:
 - start
-- end (optional for loop)
-- mode: shortest | safe | scenic | explore | elevation | best | loop
-- duration (for loop)
+- end (optional for loop mode)
+- mode
+- duration (for loop mode)
 
 GET /trails
 Discover nearby walkable trails
-Parameters:
-- start
-- radius
-- limit
 
 GET /trail_route
 Compute a route between two trail points
@@ -88,129 +223,30 @@ GET /export_gpx
 Export a route as a GPX file
 
 POST /vision
-LLM-based interpretation of detected hazards for AR navigation
-
----
-
-Routing Modes Explained
-
-shortest
-- Pure Valhalla pedestrian routing
-- Minimal customization
-
-safe
-- Day/night aware pedestrian costing
-- Prioritizes lit roads and safety factors
-
-scenic
-- Biases routes toward parks, greenery, and waterfronts
-- Uses Valhalla metadata for green and water scoring
-
-explore
-- Encourages lively streets and walkable areas
-- Weather- and time-aware costing
-
-elevation
-- Minimizes elevation gain
-- Returns full elevation analytics
-
-best
-- Evaluates multiple candidate routes
-- Scores them using weather, time, slope, and length
-- Returns the highest-ranked route
-
-loop
-- Generates round-trip walking routes
-- Optimized for target distance
-
----
-
-Trail Discovery System
-
-Trail discovery uses a multi-step process:
-1. Generate a pedestrian isochrone using Valhalla
-2. Extract all walkable edges within the polygon
-3. Filter to footpaths, trails, sidewalks, and tracks
-4. Compute elevation gain and distance
-5. Score difficulty, scenic value, and safety
-6. Return iOS-ready trail objects with geometry and metadata
-
-This avoids reliance on third-party trail datasets and works globally.
-
----
-
-Elevation Analysis
-
-Elevation data is fetched using a prioritized fallback chain:
-1. OpenTopoData
-2. ESRI Elevation API
-3. USGS (USA only)
-4. Zero fallback
-
-Features:
-- Batch fetching with caching
-- Noise smoothing
-- Elevation gain and loss
-- Slope calculation
-- Walking-specific difficulty classification
-
----
-
-GPX Export
-
-Routes can be exported as standard GPX 1.1 files:
-- Compatible with Apple Maps, Garmin, AllTrails, Komoot
-- Includes track name and geometry
-- Generated directly from route coordinates
-
----
-
-Geocoding and Location Parsing
-
-Inputs accepted:
-- Free-text addresses
-- POI names
-- Lat,lon coordinate strings
-
-Forward geocoding:
-- Nominatim (primary)
-- Photon (fallback)
-
-Reverse geocoding:
-- Nominatim reverse endpoint
-
----
-
-Vision Endpoint
-
-The /vision endpoint processes:
-- Object detections
-- User heading
-- Distance to next turn
-
-It returns minimal, safety-focused recommendations intended for AR display. The endpoint is designed to be conservative and non-alarming.
+Interpret vision-based hazard signals for AR navigation
 
 ---
 
 Deployment
 
-Docker-based deployment
-- Python 3.11 slim image
+The backend is containerized using Docker:
+
+- Python 3.11 slim base image
 - GEOS and spatial dependencies installed
 - FastAPI served via Uvicorn on port 8080
 
-Valhalla is expected to run as a separate service.
+Valhalla is expected to run as a separate service and is accessed via HTTP.
 
 ---
 
 Design Principles
 
-- Pedestrian-first routing
-- Global coverage
-- No dependency on proprietary map SDKs
-- Graceful fallbacks at every layer
-- JSON outputs optimized for mobile and AR clients
-- Clear separation between routing, scoring, and presentation
+- Pedestrian-first, not car-centric
+- Global operation without proprietary SDKs
+- Graceful degradation and fallbacks
+- Clear separation of routing, analytics, and presentation
+- Mobile-optimized JSON responses
+- Designed to support AR navigation constraints
 
 ---
 
@@ -218,4 +254,5 @@ Status
 
 Active development
 
-This backend powers the WalkWithMe iOS frontend and is designed to support future web and wearable clients.
+This backend powers the WalkWithMe iOS frontend and is intended to support future web, wearable, and AR-based navigation clients.
+
