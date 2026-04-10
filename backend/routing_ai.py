@@ -174,9 +174,15 @@ def _poi_seeded_midpoints(
                 math.atan2(poi["lon"] - lon0, poi["lat"] - lat0)
             ) % 360
 
-        # Sort by bearing, then greedily pick POIs at least 60° apart
+        # Sort by bearing, then greedily pick POIs at least 60° apart.
+        # Rotate the sorted list by a random offset so each call starts the
+        # greedy walk from a different POI — this varies which POIs get selected
+        # while still guaranteeing directional spread around the compass.
         pois_with_bearing = [(p, bearing_to(p)) for p in pois]
         pois_with_bearing.sort(key=lambda x: x[1])
+        if len(pois_with_bearing) > 1:
+            offset = random.randint(0, len(pois_with_bearing) - 1)
+            pois_with_bearing = pois_with_bearing[offset:] + pois_with_bearing[:offset]
 
         selected = []
         last_bearing = -999.0
