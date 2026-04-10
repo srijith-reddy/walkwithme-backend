@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+requests
+pydantic
+python-dotenv
+rapidfuzz
+polyline
+python-multipart
+numpy
+# openai==0.28.1 pinned for legacy ChatCompletion.create API used in /vision
+openai==0.28.1

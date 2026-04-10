@@ -1,0 +1,47 @@
+name: walkwithme
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Core Python
+  - python=3.11
+  - pip
+
+  # Backend + Web API
+  - fastapi
+  - uvicorn
+  - pydantic
+  - starlette
+  - requests
+  - aiohttp
+
+  # Maps + Routing (OSM / graph)
+  - osmnx
+  - networkx
+  - geopandas
+  - shapely
+  - pyproj
+
+  # Elevation + Terrain
+  - rasterio
+  - elevation
+  - scipy
+  - numpy
+  - pandas
+
+  # Machine Learning (scoring for safety + scenic + vibes)
+  - scikit-learn
+
+  # Utilities
+  - rich            # pretty logs + debugging
+  - tqdm            # progress bars
+
+  # Optional but useful (cache, tiles)
+  - sqlite          # local caching
+  - pillow          # image handling
+
+  - pip:
+      - gpxpy            # GPX export
+      - polyline         # Google/Mapbox polyline encoding
+      - python-dotenv    # API keys
