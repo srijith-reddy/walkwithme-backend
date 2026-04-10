@@ -15,6 +15,8 @@ from pydantic import BaseModel
 
 from backend.config import GOOGLE_PLACES_API_KEY, OPENAI_API_KEY
 from backend.routing import get_route, ALLOWED_MODES
+from backend.loop_assistant.models import LoopAssistantRequest
+from backend.loop_assistant.service import run_loop_assistant
 from backend.gpx.import_gpx import import_gpx
 from backend.elevation import analyze_route_elevation
 from backend.enrichment import enrich_route, find_nearby
@@ -591,3 +593,26 @@ async def vision(payload: VisionRequest):
         return {"ok": True, "analysis": resp.choices[0].message["content"]}
     except Exception as e:
         raise HTTPException(500, f"Vision failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# POST /loop_assistant — natural-language loop request → structured options
+# ---------------------------------------------------------------------------
+@app.post("/loop_assistant")
+def loop_assistant(payload: LoopAssistantRequest):
+    """
+    Convert a natural-language loop request into ranked, enriched loop options.
+
+    Examples:
+      {"query": "food loop in East Village"}
+      {"query": "quick scenic walk from 23rd St"}
+      {"query": "surprise me", "user_lat": 40.73, "user_lon": -74.00}
+
+    Returns origin info, an assistant summary, and up to max_options ranked
+    loop routes — each with title, highlights, suggested stops, and route geometry.
+    """
+    try:
+        return run_loop_assistant(payload)
+    except Exception as e:
+        logger.exception("Loop assistant failed")
+        raise HTTPException(500, f"Loop assistant failed: {e}")

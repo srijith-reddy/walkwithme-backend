@@ -332,6 +332,25 @@ POST /vision
 Interpret vision-based hazard signals for AR navigation. Requires OPENAI_API_KEY.
 Body: { detections, heading, distance_to_next }
 
+POST /loop_assistant
+Convert a natural-language loop request into ranked, enriched loop options.
+Body: { query, user_lat (optional), user_lon (optional), max_options (1–5, default 3) }
+
+Accepts three query types:
+- Station-based: "food loop from 14th Street", "create routes from 23rd St"
+- Area-based: "scenic walk in SoHo", "generate a loop in East Village"
+- Open-ended: "surprise me", "give me a good walk", "quick loop near me"
+
+The assistant parses the query into a structured intent (theme, duration, location), resolves an
+origin coordinate, generates candidates in parallel via the Valhalla routing stack, enriches each
+with POI data, deduplicates near-identical routes, and returns ranked options. No LLM required.
+
+Response:
+- origin: resolved start point with label and origin_type (area / station / user_location / default)
+- assistant_summary: one-line summary of results
+- options[]: ranked loop options with title, subtitle, theme, duration_min, distance_miles,
+  highlights, suggested_stops, neighborhood_character, why_this, and route_preview
+
 ---
 
 Configuration
