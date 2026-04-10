@@ -299,7 +299,11 @@ def get_ai_loop_route(
     if poi_midpoints:
         candidate_midpoints.append(("poi_seeded", poi_midpoints))
 
-    for seed in [42, 137]:
+    # Use a fresh random base each call so repeated requests return different routes.
+    # Two seeds derived from the same base keep the candidates meaningfully different
+    # from each other while varying across requests.
+    _base = random.randint(0, 99_999)
+    for seed in [_base, _base + 137]:
         candidate_midpoints.append(
             (f"geometric_{seed}", _geometric_midpoints(lat0, lon0, target_km, n=n_midpoints, seed=seed))
         )
